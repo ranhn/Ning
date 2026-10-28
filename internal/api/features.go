@@ -34,6 +34,7 @@ func (s *Server) registerFeatures() {
 	s.mux.HandleFunc("GET /api/intercept/pending", s.fPending)
 	s.mux.HandleFunc("POST /api/intercept/pending/{id}/decide", s.fDecide)
 	s.mux.HandleFunc("GET /api/intercept/history", s.fHistory)
+	s.mux.HandleFunc("GET /api/intercept/history/{id}", s.fApprovalDetail)
 
 	s.mux.HandleFunc("GET /api/skills", s.fSkills)
 	s.mux.HandleFunc("GET /api/tasks/{id}/egress", s.fEgress)
@@ -313,14 +314,93 @@ func (s *Server) fDeleteRule(w http.ResponseWriter, r *http.Request) {
 
 // ---- 审批 ----
 
+// approvalJSON 把内部审批记录翻译成控制台契约（InterceptPending）。
+//
+// 字段名必须严格对齐前端：status / tool_name / tool_input / agent_name。
+// 之前这里直接返回 store.Approval（decision / tool / input），
+// 前端拿 row.status 得到 undefined，与 detail?.status 的 undefined 相等，
+// 于是选中了 null 的 detail 并在 current.agent_name 上崩掉。
+func (s *Server) approvalJSON(a store.Approval) map[string]any {
+	var input map[string]any
+	if err := json.Unmarshal([]byte(a.Input), &input); err != nil || input == nil {
+		input = map[string]any{"raw": a.Input}
+	}
+	status := a.Decision
+	if status == "" {
+		status = "pending"
+	}
+	reason := a.Reason
+	if reason == "" && a.RuleID > 0 {
+		for _, r := range s.d.Store.Rules() {
+			if r.ID == a.RuleID {
+				reason = r.Name
+				if r.Message != "" {
+					reason += "：" + r.Message
+				}
+				break
+			}
+		}
+	}
+	return map[string]any{
+		"id": a.ID, "task_id": strconv.FormatInt(a.TaskID, 10),
+		"conversation_id": nil,
+		"agent_name":      fmt.Sprintf("work#%d", a.IntentID),
+		"tool_name":       a.Tool,
+		"tool_input":      input,
+		"status":          status,
+		"reason":          reason,
+		"decision_source": "rule",
+		"created_at":      a.CreatedAt.Format(time.RFC3339),
+	}
+}
+
 func (s *Server) fPending(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"pending": s.d.Store.PendingApprovals()})
+	items := s.d.Store.PendingApprovals()
+	out := make([]map[string]any, 0, len(items))
+	for _, a := range items {
+		out = append(out, s.approvalJSON(a))
+	}
+	// pending 与 rows 同时给：前端既有 .pending 也有 .rows 的读取习惯
+	writeJSON(w, http.StatusOK, map[string]any{"pending": out, "rows": out, "total": len(out)})
 }
 
 func (s *Server) fHistory(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": s.d.Store.Approvals(qTaskID(r), qInt(r, "limit", 100)),
-	})
+	items := s.d.Store.Approvals(qTaskID(r), qInt(r, "limit", 100))
+	out := make([]map[string]any, 0, len(items))
+	for _, a := range items {
+		out = append(out, s.approvalJSON(a))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out, "rows": out, "total": len(out)})
+}
+
+// fApprovalDetail 返回单条审批详情（前端拦截详情面板用）。
+func (s *Server) fApprovalDetail(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	find := func(rows []store.Approval) (store.Approval, bool) {
+		for _, a := range rows {
+			if a.ID == id {
+				return a, true
+			}
+		}
+		return store.Approval{}, false
+	}
+	a, found := find(s.d.Store.PendingApprovals())
+	if !found {
+		a, found = find(s.d.Store.Approvals(0, 1000))
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, "审批记录不存在")
+		return
+	}
+	out := s.approvalJSON(a)
+	// audit 让前端知道"这次调用最终有没有真的执行"
+	out["audit"] = map[string]any{
+		"execution_status": "unknown", "correlation": "none", "effective_action": a.Decision,
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) fDecide(w http.ResponseWriter, r *http.Request) {

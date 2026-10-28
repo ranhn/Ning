@@ -64,6 +64,7 @@ func New(d Deps) *Server {
 	s.mux.HandleFunc("GET /api/tasks", s.listTasks)
 	s.mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
 	s.mux.HandleFunc("POST /api/tasks/{id}/start", s.startTask)
+	s.mux.HandleFunc("DELETE /api/tasks/{id}", s.deleteTask)
 	s.mux.HandleFunc("POST /api/tasks/{id}/stop", s.stopTask)
 	s.mux.HandleFunc("GET /api/tasks/{id}/intents", s.listIntents)
 	s.mux.HandleFunc("GET /api/tasks/{id}/findings", s.listFindings)
@@ -140,6 +141,14 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "范围规则非法: "+err.Error())
 		return
 	}
+	// 创建任务后立即落盘：默认是 500ms 防抖，若期间进程被重启，任务就没了
+	// （范围只能建任务时确定，丢了只能重建）。
+	defer func() {
+		if saver, ok := s.d.Store.(interface{ Save() error }); ok {
+			_ = saver.Save()
+		}
+	}()
+
 	t := store.Task{Name: req.Name, Goal: req.Goal, Workers: req.Workers}
 	if req.Minutes > 0 {
 		dl := time.Now().UTC().Add(time.Duration(req.Minutes) * time.Minute)
@@ -266,6 +275,27 @@ func (s *Server) startTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "task_id": id})
 }
 
+// deleteTask 删除任务（含意图/漏洞/资产）。运行中的先取消引擎。
+func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	if cancel, running := s.running[id]; running {
+		cancel()
+		delete(s.running, id)
+	}
+	delete(s.scopes, id)
+	s.mu.Unlock()
+
+	if !s.d.Store.DeleteTask(id) {
+		writeErr(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
 func (s *Server) stopTask(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -279,6 +309,8 @@ func (s *Server) stopTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cancel()
+	// 立即落终态，让界面马上有反馈；引擎收尾时会再设一次（值相同，幂等）。
+	s.d.Store.SetTaskState(id, store.TaskStopped)
 	writeJSON(w, http.StatusOK, map[string]any{"stopping": true, "task_id": id})
 }
 

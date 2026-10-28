@@ -43,25 +43,49 @@ type MeteredPlanner interface {
 	LastUsage() (tokens int64, cost int64)
 }
 
-// Config 是调度参数。
-type Config struct {
-	Workers    int
-	Debounce   time.Duration
-	Heartbeat  time.Duration
-	Grace      time.Duration
-	MaxRounds  int
-	IdleRounds int
+// StagnationAware 是可选能力：调度器把"连续几轮没有新产出"告诉规划器，
+// 规划器据此在提示词里要求换方向。
+//
+// 这是 ARTEX 的做法：停滞不结束任务，只用来纠偏。我们之前把停滞直接当收敛条件，
+// 结果目标还没打完任务就 done 了。
+type StagnationAware interface {
+	SetStagnation(rounds, threshold int)
 }
 
-// DefaultConfig 返回默认参数（worker 3、防抖 800ms、心跳 600s、收敛 3 轮）。
+// GoalMet 是可选能力：规划器显式声明"任务目标已被证据证明达成"。
+// 这是唯一的正常结束路径（其余是超时与手动停止）。
+type GoalMet interface {
+	GoalMet() bool
+}
+
+// Config 是调度参数。
+type Config struct {
+	Workers   int
+	Debounce  time.Duration
+	Heartbeat time.Duration
+	Grace     time.Duration
+	MaxRounds int
+	// IdleRounds：连续空轮达到该值就结束。0 = 不因空轮结束（生产默认）。
+	// 语义对齐 ARTEX：任务只在「目标达成 / 超时 / 用户停止」时结束，
+	// 而不是「几轮没有新产出」——后者会让一个还没打完的目标提前收工。
+	IdleRounds int
+	// StagnantRounds：连续多少轮没有新增产出就提示规划器「换方向」（只提示，不结束）。
+	StagnantRounds int
+}
+
+// DefaultConfig 返回默认参数（worker 3、防抖 800ms、心跳 600s）。
+//
+// 关键：IdleRounds=0，即不做「无产出收敛」。任务会一直推进到 deadline 或被手动停止；
+// 停滞只换来一句「换个方向」的提示。
 func DefaultConfig() Config {
 	return Config{
-		Workers:    3,
-		Debounce:   800 * time.Millisecond,
-		Heartbeat:  600 * time.Second,
-		Grace:      30 * time.Second,
-		MaxRounds:  200,
-		IdleRounds: 3,
+		Workers:        3,
+		Debounce:       800 * time.Millisecond,
+		Heartbeat:      600 * time.Second,
+		Grace:          30 * time.Second,
+		MaxRounds:      200,
+		IdleRounds:     0,
+		StagnantRounds: 3,
 	}
 }
 
@@ -151,6 +175,14 @@ func (e *Engine) RunTask(ctx context.Context, taskID int64) (Summary, error) {
 	defer cancel()
 
 	e.st.SetTaskState(taskID, store.TaskRunning)
+
+	// 续跑准备：上次被停止或进程崩溃时可能留下 running 状态的意图，
+	// 它们不会再被领取——退回 open 才能继续做（否则"停止→启动"就永远缺那几条）。
+	for _, it := range e.st.Intents(taskID) {
+		if it.State == store.IntentRunning {
+			e.st.CompleteIntent(it.ID, store.IntentOpen)
+		}
+	}
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -313,6 +345,36 @@ func (e *Engine) chargePlan(tokens, cost int64) {
 	}
 }
 
+// idleBackoff 决定"连续第 n 轮空转"之后等多久再试。
+//
+// 目的：任务不该因为暂时没思路而结束（ARTEX 模型），但也不能每 800ms 空烧一次模型调用。
+func idleBackoff(idle int) time.Duration {
+	switch {
+	case idle <= 1:
+		return 5 * time.Second
+	case idle == 2:
+		return 15 * time.Second
+	case idle == 3:
+		return 60 * time.Second
+	case idle <= 5:
+		return 180 * time.Second
+	default:
+		return 300 * time.Second
+	}
+}
+
+// progress 返回任务的"有效产出"计数（完成意图 + 漏洞）。
+// 用它判断是否还在推进；只有 blocked 意图增加不算进展。
+func (e *Engine) progress(taskID int64) int {
+	done := 0
+	for _, it := range e.st.Intents(taskID) {
+		if it.State == store.IntentDone {
+			done++
+		}
+	}
+	return done + len(e.st.Findings(taskID))
+}
+
 // plannerLoop 负责规划：首轮 kick + 防抖 + 心跳 + 收敛判定。
 func (e *Engine) plannerLoop(ctx context.Context, t store.Task, stop <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
@@ -322,6 +384,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t store.Task, stop <-chan stru
 	defer debounce.Stop()
 	heartbeat := time.NewTicker(e.cfg.Heartbeat)
 	defer heartbeat.Stop()
+
+	// 停滞检测（对齐 ARTEX）：连续几轮没有新增产出时，只告诉规划器"换个方向"，
+	// 绝不因此结束任务。结束只由「目标达成 / 超时 / 手动停止」决定。
+	lastProgress := -1
+	stagnant := 0
 
 	runRound := func() (converged bool) {
 		e.mu.Lock()
@@ -334,6 +401,16 @@ func (e *Engine) plannerLoop(ctx context.Context, t store.Task, stop <-chan stru
 		if e.exhausted.Load() {
 			return true
 		}
+		// 停滞只累计计数并告知规划器，不结束任务。
+		if prog := e.progress(t.ID); lastProgress >= 0 && prog <= lastProgress {
+			stagnant++
+		} else {
+			stagnant = 0
+			lastProgress = prog
+		}
+		if sa, ok := e.pl.(StagnationAware); ok {
+			sa.SetStagnation(stagnant, e.cfg.StagnantRounds)
+		}
 		intents, err := e.pl.Next(ctx, t, e.st)
 		if mp, ok := e.pl.(MeteredPlanner); ok {
 			if tok, cost := mp.LastUsage(); tok > 0 || cost > 0 {
@@ -342,6 +419,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t store.Task, stop <-chan stru
 		}
 		if err != nil {
 			return false
+		}
+		// 模型显式声明"目标已被证据证明达成" → 唯一的正常结束路径。
+		if gm, ok := e.pl.(GoalMet); ok && gm.GoalMet() {
+			return true
 		}
 		added := 0
 		for _, it := range intents {
@@ -373,6 +454,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t store.Task, stop <-chan stru
 		} else {
 			idle = 0
 		}
+		// IdleRounds<=0（生产默认）表示"不因空轮结束"：任务会继续等心跳/防抖，
+		// 直到目标达成、超时或被手动停止。只有测试与显式配置才让它收敛。
+		if e.cfg.IdleRounds <= 0 {
+			return false
+		}
 		return idle >= e.cfg.IdleRounds
 	}
 
@@ -394,8 +480,19 @@ func (e *Engine) plannerLoop(ctx context.Context, t store.Task, stop <-chan stru
 				if runRound() {
 					return
 				}
-				// 空转时自唤醒，避免"没有新事件就靠心跳才收敛"。
+				// 空转时**退避后**自唤醒：既不让任务停在这里，也不每 800ms 空烧一次模型。
+				// 连续空轮越多、间隔越长，最后与心跳同量级。
 				if idle > 0 {
+					t := time.NewTimer(idleBackoff(idle))
+					select {
+					case <-t.C:
+					case <-ctx.Done():
+						t.Stop()
+						return
+					case <-stop:
+						t.Stop()
+						return
+					}
 					select {
 					case e.notify <- struct{}{}:
 					default:

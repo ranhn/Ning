@@ -39,10 +39,17 @@ func autoSeed(rules []scope.Rule) []store.Intent {
 			add("nmap -sV -Pn --top-ports 100 "+v, "nmap:"+v)
 			add("curl -sS -D - --max-time 8 http://"+v+"/", "curl:"+v)
 		case scope.KindDomainSuffix, scope.KindExactDomain:
-			h := strings.TrimPrefix(v, ".")
-			add("nmap -sV -Pn --top-ports 100 "+h, "nmap:"+h)
-			add("curl -sS -D - --max-time 8 http://"+h+"/", "curl:"+h)
-			add("curl -sS --max-time 8 http://"+h+"/robots.txt", "robots:"+h)
+			// 域名只需要一条 Discover：内部完成"子域枚举 → 可用性确认"，
+			// 再自动派生端口扫描与路径探测意图。调用方只给根域即可。
+			h := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(v, "*."), "."), ".")
+			if len(out) >= 6 || seen["discover:"+h] {
+				continue
+			}
+			seen["discover:"+h] = true
+			summary, _ := json.Marshal(map[string]string{"domain": h})
+			out = append(out, store.Intent{
+				Action: "Discover", Summary: string(summary), ParamKey: "discover:" + h,
+			})
 		case scope.KindExactURL:
 			add("curl -sS -D - --max-time 8 "+v, "curl:"+v)
 		}

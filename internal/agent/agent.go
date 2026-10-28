@@ -154,8 +154,13 @@ func (e *SimExecutor) Run(ctx context.Context, t store.Task, it store.Intent) (e
 			"traffic_id": rec.ID, "url": firstURL, "status": status, "resp_len": respLen, "err": traffic.Err,
 		})
 		if err != nil {
-			res.State = store.IntentBlocked
-			res.Note = "请求失败: " + err.Error()
+			if ctx.Err() != nil {
+				res.State = store.IntentOpen
+				res.Note = "任务已停止，该动作未完成（续跑会重试）"
+			} else {
+				res.State = store.IntentBlocked
+				res.Note = "请求失败: " + err.Error()
+			}
 			out = err.Error()
 			code = -1
 		} else {

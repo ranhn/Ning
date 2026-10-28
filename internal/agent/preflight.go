@@ -62,15 +62,39 @@ func preflight(
 	}
 
 	// 2) 第 2 层闸门（执行期范围校验）
-	dec := g.CheckTool(ctx, t.ID, it.ID, it.Action, input)
-	if !dec.Allowed {
-		appendEvidence(ev, t, it, "scope_blocked", map[string]any{
-			"layer": string(dec.Layer), "target": dec.Target, "reason": dec.Reason,
-			"tool": it.Action, "input": it.Summary,
-		})
-		res.State = store.IntentBlocked
-		res.Note = dec.Reason
-		return res, preflightResult{}, true
+	//
+	// Discover 是"扩面"动作：它要枚举的大多数子域本来就不存在，
+	// 因此不能走「解析失败即拒绝」。改为只校验根域是否在授权范围内；
+	// 它真正连的每一个 IP 仍会在 discover 内部逐个 CheckDial。
+	if strings.EqualFold(it.Action, "Discover") {
+		root := discoverDomain(g, input)
+		if root == "" {
+			appendEvidence(ev, t, it, "scope_blocked", map[string]any{
+				"layer": string(gate.LayerExec), "reason": "Discover 缺少根域", "input": it.Summary,
+			})
+			res.State = store.IntentBlocked
+			res.Note = "Discover 缺少根域（输入里没有 domain，范围里也没有域名规则）"
+			return res, preflightResult{}, true
+		}
+		if sc := g.Scope(); sc == nil || !sc.AllowsHost(root) {
+			appendEvidence(ev, t, it, "scope_blocked", map[string]any{
+				"layer": string(gate.LayerExec), "target": root, "reason": "根域不在授权范围",
+			})
+			res.State = store.IntentBlocked
+			res.Note = "根域不在授权范围：" + root
+			return res, preflightResult{}, true
+		}
+	} else {
+		dec := g.CheckTool(ctx, t.ID, it.ID, it.Action, input)
+		if !dec.Allowed {
+			appendEvidence(ev, t, it, "scope_blocked", map[string]any{
+				"layer": string(dec.Layer), "target": dec.Target, "reason": dec.Reason,
+				"tool": it.Action, "input": it.Summary,
+			})
+			res.State = store.IntentBlocked
+			res.Note = dec.Reason
+			return res, preflightResult{}, true
+		}
 	}
 
 	// 3) 资产记账（只有放行过的目标才会入图）
@@ -118,6 +142,11 @@ func assertDialable(ctx context.Context, g *gate.Gate, targets []string) (map[st
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("%s 未解析到任何地址", host)
 		}
+		// 顺序很重要：先做**授权判定**（域名在范围内 → 这批 IP 放行），再逐个校验。
+		// 反过来写就会出现"CDN 换了批 IP → 校验失败 → 直接返回"，永远来不及放行。
+		if err := g.AdmitHost(host, ips); err != nil {
+			return nil, err
+		}
 		ok := make([]netip.Addr, 0, len(ips))
 		for _, ip := range ips {
 			if err := g.CheckDial(ip.Unmap()); err != nil {
@@ -128,6 +157,27 @@ func assertDialable(ctx context.Context, g *gate.Gate, targets []string) (map[st
 		pins[host] = ok
 	}
 	return pins, nil
+}
+
+// discoverDomain 取枚举根域：优先用输入里的 domain，其次用范围里的第一条域名规则。
+func discoverDomain(g *gate.Gate, input json.RawMessage) string {
+	var in struct {
+		Domain string `json:"domain"`
+	}
+	_ = json.Unmarshal(input, &in)
+	root := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(in.Domain), "*."), ".")
+	if root != "" {
+		return root
+	}
+	if g != nil && g.Scope() != nil {
+		for _, r := range g.Scope().Rules() {
+			switch r.Kind {
+			case scope.KindDomainSuffix, scope.KindExactDomain:
+				return strings.TrimPrefix(strings.TrimPrefix(r.Value, "*."), ".")
+			}
+		}
+	}
+	return ""
 }
 
 // appendEvidence 是证据直写的薄封装（ev 为空时安全跳过）。

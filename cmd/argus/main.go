@@ -16,7 +16,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -130,7 +132,8 @@ func runtimeDeps(st store.Store, ev *evidence.Store, b *budget.Budget, token str
 	return api.Deps{
 		Store: st, Ev: ev, Budget: b, Token: token,
 		NewGate: func(taskID int64, sc *scope.Scope, sink gate.Sink) *gate.Gate {
-			return gate.New(sc, res, sink)
+			// 绑定任务号：越界记录必须能按任务归档，否则历史越界会污染每个新任务
+			return gate.New(sc, res, sink, gate.WithTaskID(taskID))
 		},
 		NewExec: func(taskID int64, g *gate.Gate) engine.Executor {
 			return &agent.SimExecutor{
@@ -145,8 +148,8 @@ func runtimeDeps(st store.Store, ev *evidence.Store, b *budget.Budget, token str
 }
 
 // serveDeps 是生产装配：持久化 + LLM 规划器 + 运行期配置。
-func serveDeps(st *store.Memory, ev *evidence.Store, b *budget.Budget, token string, res gate.Resolver, stg *settings.Store, execMode string, tools *toolbox.Executor) api.Deps {
-	pl := planner.New(stg)
+func serveDeps(st *store.Memory, ev *evidence.Store, b *budget.Budget, token string, res gate.Resolver, stg *settings.Store, execMode string, tools *toolbox.Executor, env planner.EnvProvider) api.Deps {
+	pl := planner.NewWithEnv(stg, env)
 	d := runtimeDeps(st, ev, b, token, res)
 	d.Settings = stg
 	d.PlannerInfo = pl.Stats
@@ -169,23 +172,45 @@ func serveDeps(st *store.Memory, ev *evidence.Store, b *budget.Budget, token str
 // 注意：这些规则是**闸门之上的附加层**——全部删掉，三层范围闸门依然生效。
 // 之所以要有它们：范围管"能不能碰这个目标"，规则管"能对这个目标做什么"。
 func seedDefaultRules(st *store.Memory) {
-	if len(st.Rules()) > 0 {
-		return
-	}
 	builtin := []store.Rule{
 		{Name: "禁止磁盘破坏操作", Enabled: true, Action: "deny", MatchTarget: "tool_input", MatchType: "regex",
 			Pattern: `(?i)(rm\s+-rf\s+/|mkfs\.|dd\s+if=|:\(\)\s*\{)`, Message: "破坏性命令只允许人工执行"},
 		{Name: "禁止改系统账户", Enabled: true, Action: "deny", MatchTarget: "tool_input", MatchType: "regex",
 			Pattern: `(?i)(useradd|userdel|passwd\s+root|chmod\s+777\s+/)`, Message: "账户与权限变更需人工审批"},
+		// nuclei 是**只读模板验证**（按模板发请求、比对响应），是发现已知漏洞最有效的手段，
+		// 不该挡在审批队列后面；真正会改状态、留后门的工具仍然要审批。
 		{Name: "主动攻击工具需审批", Enabled: true, Action: "ask", MatchTarget: "tool_input", MatchType: "regex",
-			Pattern: `(?i)(sqlmap|nuclei|hydra|metasploit|msfconsole)`, Message: "主动攻击工具会留下明显痕迹，需人工确认"},
+			Pattern: `(?i)(sqlmap|hydra|metasploit|msfconsole|nikto)`, Message: "主动攻击工具会留下明显痕迹，需人工确认"},
 		{Name: "禁止反弹 shell", Enabled: true, Action: "deny", MatchTarget: "tool_input", MatchType: "regex",
 			Pattern: `(?i)(bash\s+-i\s+>&|nc\s+-e\s+/bin/(ba)?sh|/dev/tcp/)`, Message: "反弹 shell 属于高风险动作，默认禁止"},
 	}
-	for _, r := range builtin {
-		st.AddRule(r)
+	// 按名称 upsert：已播种的旧规则也要跟着版本更新，
+	// 否则改完这条规则，老库里仍然是旧的正则（nuclei 永远被审批挡住）。
+	existing := map[string]store.Rule{}
+	for _, r := range st.Rules() {
+		existing[r.Name] = r
 	}
-	log.Printf("已写入 %d 条内置拦截规则（可在 /api/intercept/rules 查看/删除）", len(builtin))
+	added, updated := 0, 0
+	for _, r := range builtin {
+		if old, ok := existing[r.Name]; ok {
+			r := r
+			st.UpdateRule(old.ID, func(x *store.Rule) {
+				x.Pattern = r.Pattern
+				x.Action = r.Action
+				x.Message = r.Message
+				x.MatchType = r.MatchType
+				x.MatchTarget = r.MatchTarget
+				x.Enabled = true
+			})
+			updated++
+			continue
+		}
+		st.AddRule(r)
+		added++
+	}
+	if added+updated > 0 {
+		log.Printf("内置拦截规则: 新增 %d 条, 更新 %d 条（nuclei 已允许自动执行）", added, updated)
+	}
 }
 
 func runServe(args []string) error {
@@ -216,6 +241,11 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	// 进程重启后，上次 running 的任务已没有引擎在跑，标记为 stopped 并落盘，
+	// 否则界面上会是永远转圈的僵尸任务。
+	if n := st.ReconcileRunning(); n > 0 {
+		log.Printf("已将 %d 个上次未完成的任务标记为 stopped", n)
+	}
 	seedDefaultRules(st)
 	stg := settings.Open(filepath.Join(*data, "settings.json"))
 	b := budget.New()
@@ -223,6 +253,9 @@ func runServe(args []string) error {
 	if res != nil {
 		log.Printf("使用静态解析表: %s（未命中的主机按失败关闭处理）", *dns)
 	}
+	envHolder := &plannerEnv{}
+	envHolder.set(nil, nil) // 先用系统信息占位，工具列表等探测完成再补
+
 	tools := toolbox.New(nil)
 	tools.WorkDir = filepath.Join(*data, "work")
 	tools.MaxOutput = 64 << 10
@@ -259,6 +292,8 @@ func runServe(args []string) error {
 					mismatch = append(mismatch, st.Name)
 				}
 			}
+			// 把真实可用工具喂给规划器：模型就不会再生成 getent / ss 这类本机没有的命令。
+			envHolder.set(ready, append(missing, mismatch...))
 			log.Printf("工具就绪(%d): %s", len(ready), strings.Join(ready, ", "))
 			if len(missing) > 0 {
 				log.Printf("工具缺失(%d): %s —— 相关意图会被拦成「工具未安装」", len(missing), strings.Join(missing, ", "))
@@ -273,7 +308,7 @@ func runServe(args []string) error {
 	} else {
 		log.Printf("LLM 已配置: %s / %s", stg.LLM().Provider, stg.LLM().Model)
 	}
-	srv := api.New(serveDeps(st, ev, b, *token, res, stg, *execMode, tools))
+	srv := api.New(serveDeps(st, ev, b, *token, res, stg, *execMode, tools, envHolder.get))
 
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -362,6 +397,30 @@ func buildHandler(webDir string, apiHandler http.Handler) http.Handler {
 		http.ServeFile(w, r, index)
 	})
 	return root
+}
+
+// plannerEnv 保存执行环境快照，供规划器在提示词里声明"本机真实有什么"。
+// 工具探测在后台异步完成，所以用读写锁保护：规划器每次取最新值。
+type plannerEnv struct {
+	mu  sync.RWMutex
+	env planner.Env
+}
+
+func (p *plannerEnv) set(tools, missing []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.env = planner.Env{
+		OS:      runtime.GOOS,
+		Arch:    runtime.GOARCH,
+		Tools:   append([]string(nil), tools...),
+		Missing: append([]string(nil), missing...),
+	}
+}
+
+func (p *plannerEnv) get() planner.Env {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.env
 }
 
 func banner(addr, data string, n int) {

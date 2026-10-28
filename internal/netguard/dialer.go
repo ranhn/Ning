@@ -47,6 +47,15 @@ func Dialer(chk DialChecker, timeout time.Duration) *net.Dialer {
 // LookupFunc 与闸门共用的解析签名。
 type LookupFunc func(ctx context.Context, host string) ([]netip.Addr, error)
 
+// HostAdmitter 是可选能力：闸门能对"已授权域名 + 其解析结果"做授权判定（并放行）。
+//
+// 为什么需要：CDN 对同一域名轮询返回不同 IP。如果只用 CheckDial 逐个校验，
+// 每次解析出的新 IP 都会被当成越界——用户看到的就是满屏 network 拦截。
+// 有了它，拨号器可以先把"授权域名解析出的"这批 IP 纳入放行，再校验。
+type HostAdmitter interface {
+	AdmitHost(host string, ips []netip.Addr) error
+}
+
 // HTTPClient 返回所有出站 HTTP 都过闸门的 client。pentest worker 必须用它，
 // 不允许直接 http.DefaultClient。
 func HTTPClient(chk DialChecker, timeout time.Duration) *http.Client {
@@ -79,6 +88,13 @@ func HTTPClientWithLookup(chk DialChecker, timeout time.Duration, lookup LookupF
 			}
 			if len(ips) == 0 {
 				return nil, fmt.Errorf("netguard: %s 未解析到任何地址", host)
+			}
+			// 域名在授权范围内 → 它此刻解析出的 IP 就应当被放行（授权对象是域名）。
+			// 元数据地址等红线由 AdmitHost 内部继续拒绝。
+			if adm, ok := chk.(HostAdmitter); ok {
+				if err := adm.AdmitHost(host, ips); err != nil {
+					return nil, err
+				}
 			}
 			ip := ips[0].Unmap()
 			if err := chk.CheckDial(ip); err != nil {

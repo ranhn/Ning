@@ -62,17 +62,21 @@ func New(rules []Rule) (*Scope, error) {
 		}
 		switch r.Kind {
 		case KindExactDomain:
-			h, err := normalizeHost(v)
+			h, err := normalizeHost(strings.TrimPrefix(strings.TrimPrefix(v, "*."), "."))
 			if err != nil {
 				return nil, fmt.Errorf("规则 #%d: %w", i+1, err)
 			}
 			s.domains[h] = struct{}{}
+			// 规则值也存规范化后的形式：下游（自动种子、出口白名单、报告）
+			// 直接拿 Rules() 用，若保留 "*.x.com" 会生成 "nmap *.x.com" 这种不可解析的目标。
+			v = h
 		case KindDomainSuffix:
 			h, err := normalizeHost(strings.TrimPrefix(strings.TrimPrefix(v, "*."), "."))
 			if err != nil {
 				return nil, fmt.Errorf("规则 #%d: %w", i+1, err)
 			}
 			s.suffixes = append(s.suffixes, h)
+			v = h
 		case KindCIDR:
 			p, err := netip.ParsePrefix(v)
 			if err != nil {

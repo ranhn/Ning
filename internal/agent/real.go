@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/argus/argus/internal/attack"
+	"github.com/argus/argus/internal/dedupe"
+	"github.com/argus/argus/internal/discover"
 	"github.com/argus/argus/internal/engine"
 	"github.com/argus/argus/internal/evidence"
 	"github.com/argus/argus/internal/gate"
+	"github.com/argus/argus/internal/scope"
 	"github.com/argus/argus/internal/store"
 	"github.com/argus/argus/internal/toolbox"
 )
@@ -63,6 +66,11 @@ func (e *RealExecutor) Run(ctx context.Context, t store.Task, it store.Intent) (
 	res, pf, blocked := preflight(ctx, e.Gate, e.St, e.Ev, t, it, input)
 	if blocked {
 		return res, nil
+	}
+
+	// 内建动作：子域枚举（不走外部工具，由 discover 包直接完成并派生后续意图）
+	if strings.EqualFold(it.Action, "Discover") {
+		return e.runDiscover(ctx, t, it, input, res), nil
 	}
 
 	cmdline := commandOf(input)
@@ -122,6 +130,13 @@ func (e *RealExecutor) Run(ctx context.Context, t store.Task, it store.Intent) (
 		})
 		switch {
 		case runErr != nil:
+			// 任务被"停止"打断时，命令是被 kill 的，这不是失败而是中断：
+			// 退回 open，续跑时会重试，否则这条动作就永久丢失了。
+			if ctx.Err() != nil {
+				res.State = store.IntentOpen
+				res.Note = "任务已停止，该动作未完成（续跑会重试）"
+				break
+			}
 			res.State = store.IntentBlocked
 			res.Note = runErr.Error()
 		case rr.Exit != 0:
@@ -178,6 +193,114 @@ func (e *RealExecutor) Run(ctx context.Context, t store.Task, it store.Intent) (
 		res.Findings = 1
 	}
 	return res, nil
+}
+
+// runDiscover 执行子域枚举，并把发现的资产翻译成后续意图：
+//
+//	解析成功的主机 → 端口扫描（nmap）
+//	HTTP 可达的主机 → 路径探测（robots.txt）
+//
+// 这样上层只需要给出一个根域，"扩面 → 确认可用 → 端口/路径"就串起来了。
+func (e *RealExecutor) runDiscover(ctx context.Context, t store.Task, it store.Intent, input json.RawMessage, res engine.Result) engine.Result {
+	var in struct {
+		Domain string   `json:"domain"`
+		Words  []string `json:"words"`
+	}
+	_ = json.Unmarshal(input, &in)
+
+	domain := strings.TrimSpace(in.Domain)
+	if domain == "" && e.Gate != nil && e.Gate.Scope() != nil {
+		for _, r := range e.Gate.Scope().Rules() {
+			if r.Kind == scope.KindDomainSuffix || r.Kind == scope.KindExactDomain {
+				domain = strings.TrimPrefix(strings.TrimPrefix(r.Value, "*."), ".")
+				break
+			}
+		}
+	}
+	if domain == "" {
+		res.State = store.IntentBlocked
+		res.Note = "Discover 需要 domain（范围里没有可用的域名规则）"
+		return res
+	}
+
+	opts := discover.Options{
+		TaskID: t.ID, IntentID: it.ID, Domain: domain, Words: in.Words,
+		Gate: e.Gate, HTTP: e.HTTP, St: e.St, Ev: e.Ev,
+	}
+
+	// 主路径：subfinder 多源枚举 → httpx 批量探活 → 派生 katana / nuclei。
+	// 这是"一个根域 → 一批可打 URL"的正确顺序：
+	// 先扩大攻击面，再用模板验证，而不是在根域上直接反复 curl。
+	// 工具不可用时自动回退到下面内置字典的旧路径。
+	if e.Tools != nil {
+		if pr, perr := discover.RunPipeline(ctx, opts, e.Tools); perr == nil && len(pr.Alive) > 0 {
+			derived := 0
+			for _, h := range pr.Alive {
+				// 抽端点：从页面与 JS 里找出真实接口路径
+				e.derive(t, it, "katana -u "+h.URL+" -d 2 -silent", "katana:"+h.URL)
+				// 模板验证：已知 CVE / 配置缺陷 / 暴露面板
+				e.derive(t, it, "nuclei -u "+h.URL+" -severity critical,high,medium -silent", "nuclei:"+h.URL)
+				derived += 2
+			}
+			res.State = store.IntentDone
+			res.Note = fmt.Sprintf("subfinder 枚举 %d 个子域，httpx 探活 %d 个站点，派生 %d 条意图（katana 抽端点 + nuclei 验证）",
+				len(pr.Subs), len(pr.Alive), derived)
+			return res
+		}
+	}
+
+	dr, err := discover.Run(ctx, opts)
+	if err != nil {
+		// 被"停止"打断不是失败：退回 open，续跑时重做这次枚举
+		if ctx.Err() != nil {
+			res.State = store.IntentOpen
+			res.Note = "任务已停止，子域枚举未完成（续跑会重试）"
+			return res
+		}
+		res.State = store.IntentBlocked
+		res.Note = "子域枚举失败: " + err.Error()
+		return res
+	}
+
+	derived := 0
+	for _, h := range dr.Hosts {
+		if h.Skipped || len(h.IPs) == 0 {
+			continue
+		}
+		// 端口：对解析成功的主机都扫（活着不代表端口开放）
+		e.derive(t, it, "nmap -sV -Pn -p 22,80,443,3306,6379,8080,8443,9200 "+h.FQDN, "nmap:"+h.FQDN)
+		derived++
+		if h.Live {
+			scheme := h.Scheme
+			if scheme == "" {
+				scheme = "http"
+			}
+			e.derive(t, it, "curl -sS --max-time 8 "+scheme+"://"+h.FQDN+"/robots.txt", "robots:"+h.FQDN)
+			derived++
+		}
+	}
+
+	res.State = store.IntentDone
+	res.Note = fmt.Sprintf("枚举 %d 个候选，解析成功 %d，HTTP 可用 %d，派生 %d 条意图",
+		dr.Tried, dr.Resolved, dr.Live, derived)
+	if res.Findings == 0 {
+		res.Findings = 0
+	}
+	return res
+}
+
+// derive 写入一条派生意图（带指纹，交给引擎做去重）。
+func (e *RealExecutor) derive(t store.Task, parent store.Intent, cmd, key string) {
+	summary, _ := json.Marshal(map[string]string{"command": cmd})
+	fp := dedupe.Fingerprint(0, "Bash", key)
+	for _, existing := range e.St.Intents(t.ID) {
+		if existing.FP == fp {
+			return
+		}
+	}
+	_, _ = e.St.AddIntent(store.Intent{
+		TaskID: t.ID, Action: "Bash", Summary: string(summary), ParamKey: key, FP: fp,
+	})
 }
 
 func (e *RealExecutor) fetch(ctx context.Context, url string) (int, int, string, string, error) {

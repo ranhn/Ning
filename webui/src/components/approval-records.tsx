@@ -327,7 +327,9 @@ export function ApprovalDetail({
   }, [row.id, row.status, revision, retry, onResolved]);
 
   // Row updates are authoritative until the lazy detail has caught up.
-  const current = detail?.status === row.status ? detail : row;
+  // 兜底：如果 detail 与 row 的 status 都是 undefined（后端字段缺失），
+  // 三元会选中 null 的 detail，随后 current.agent_name 直接抛错。
+  const current = (detail?.status === row.status && detail ? detail : row) ?? row;
   const audit = detail?.audit;
   let execution = audit ? executionLabels[audit.execution_status] : "未记录";
   if (row.status === "pending") execution = "尚未执行";

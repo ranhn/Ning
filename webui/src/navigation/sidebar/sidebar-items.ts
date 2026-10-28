@@ -71,7 +71,7 @@ export const sidebarItems: NavGroup[] = [
       { id: "chat", title: "对话", url: "/chat", icon: MessageSquare },
       { id: "tasks", title: "任务", url: "/function/tasks", icon: Target },
       // ARGUS 安全内核（真实后端）：三层范围闸门 / 预算 / 意图指纹 / 证据链 / 报告
-      { id: "argus", title: "ARGUS 闸门", url: "/function/argus", icon: ShieldCheck, badge: "new" },
+      { id: "argus", title: "ARGUS", url: "/function/argus", icon: ShieldCheck, badge: "new" },
       { id: "findings", title: "发现", url: "/function/findings", icon: Bug },
       { id: "traffic", title: "流量", url: "/function/traffic", icon: Activity },
       { id: "commands", title: "工具执行", url: "/function/commands", icon: Terminal },

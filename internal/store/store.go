@@ -114,6 +114,11 @@ type Store interface {
 	Assets(taskID int64, typ string, limit, offset int) ([]Asset, int)
 	AssetCounts(taskID int64) map[string]int
 
+	// DeleteTask 删除任务及其派生物（意图/漏洞/资产）
+	DeleteTask(id int64) bool
+	// ReconcileRunning 启动时把上次未跑完的任务标记为 stopped
+	ReconcileRunning() int
+
 	// facts：知识层（ARTEX 双图里的 fact 节点）
 	AddFact(Fact) (Fact, error)
 	Facts(taskID int64) []Fact
@@ -390,7 +395,9 @@ func (m *Memory) Violations(taskID int64) []gate.Violation {
 	defer m.mu.Unlock()
 	out := make([]gate.Violation, 0, len(m.violations))
 	for _, v := range m.violations {
-		if v.TaskID == 0 || v.TaskID == taskID {
+		// 严格按任务过滤：TaskID==0 的旧记录（早期版本没带任务号）
+		// 不能再混进每个任务的视图，否则历史越界会永远挂在新任务下面。
+		if v.TaskID == taskID && taskID > 0 {
 			out = append(out, v)
 		}
 	}

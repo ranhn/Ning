@@ -83,7 +83,226 @@ func Run() []Result {
 		check("container: 隔离参数完整 + 缺运行时时失败关闭", checkContainer),
 		check("egress: 范围→网关白名单与闸门同源", checkEgress),
 		check("report: 报告含命令回放（结论可复现）", checkReport),
+		check("planner-env: 执行环境(OS/可用命令)注入提示词", checkPlannerEnv),
+		check("cdn: 域名授权后 CDN 轮询出的新 IP 可放行，元数据地址仍拒绝", checkCDNPin),
+		check("violation-scope: 越界台账严格按任务过滤（历史记录不污染新任务）", checkViolationScoped),
+		check("resume: 停止后残留的 running 意图会被重新执行", checkResume),
+		check("long-run: 生产默认不因空轮收敛（只有目标达成/超时/停止才结束）", checkLongRun),
+		check("placeholder: 模型编造的占位目标在生成时被过滤", checkPlaceholder),
 	}
+}
+
+// checkPlaceholder 锁住"别让 example.invalid 这类占位目标进执行"这条约束。
+//
+// 真实观测：448 条意图里 99 条被拦，其中相当一部分是模型编造的
+// example.invalid / dns-brute.domain —— 必然失败，纯浪费轮次。
+func checkPlaceholder() error {
+	bad := []string{
+		`{"command":"curl http://example.com/"}`,
+		`{"command":"nmap dns-brute.domain"}`,
+		`{"command":"curl https://api.example.invalid/"}`,
+		`{"command":"nmap <domain>"}`,
+		`{"command":"nmap your-domain.com"}`,
+	}
+	for _, s := range bad {
+		if !planner.IsPlaceholderTarget(s) {
+			return fmt.Errorf("应识别为占位目标: %s", s)
+		}
+	}
+	good := []string{
+		`{"command":"nmap -sV -Pn www.levoit.com"}`,
+		`{"command":"nuclei -u https://levoit.com -severity high"}`,
+	}
+	for _, s := range good {
+		if planner.IsPlaceholderTarget(s) {
+			return fmt.Errorf("真实目标被误判为占位: %s", s)
+		}
+	}
+	return nil
+}
+
+// checkLongRun 锁住"任务不会因为暂时没产出就自己结束"这条契约。
+//
+// 对齐 ARTEX：唯一的正常结束条件是"全部目标被证据证明"（goal_met），
+// 其余是超时与手动停止。之前我们按"3 轮无产出"收敛，导致目标没打完就 done。
+func checkLongRun() error {
+	cfg := engine.DefaultConfig()
+	if cfg.IdleRounds != 0 {
+		return fmt.Errorf("生产默认 IdleRounds 应为 0（不因空轮结束），实际 %d", cfg.IdleRounds)
+	}
+	if cfg.StagnantRounds <= 0 {
+		return fmt.Errorf("停滞提示阈值应 > 0，实际 %d", cfg.StagnantRounds)
+	}
+
+	// 未调用模型时，规划器不能声称目标达成
+	var gm interface{ GoalMet() bool } = planner.New(settings.Open(""))
+	if gm.GoalMet() {
+		return fmt.Errorf("未调用模型时不应声明目标达成")
+	}
+
+	// 停滞状态可注入，且不影响 GoalMet
+	p := planner.New(settings.Open(""))
+	p.SetStagnation(5, 3)
+	if p.GoalMet() {
+		return fmt.Errorf("注入停滞不应等同于目标达成")
+	}
+	return nil
+}
+
+// checkResume 锁住"停止 → 启动 = 续跑"的语义。
+//
+// 上次被停止时，正在执行的意图可能停在 running；如果不重置，它永远不会再被领取，
+// 用户看到的就是"续跑了但少做了几条"。
+func checkResume() error {
+	script := [][]store.Intent{{}} // 规划器不再产出新意图
+	st, _, eng, _ := harness(script)
+	task, err := st.CreateTask(store.Task{Name: "resume", Goal: "续跑", Workers: 1})
+	if err != nil {
+		return err
+	}
+	it, err := st.AddIntent(store.Intent{
+		TaskID: task.ID, Action: "Bash", Summary: `{"command":"echo resume"}`, ParamKey: "resume",
+	})
+	if err != nil {
+		return err
+	}
+	if !st.ClaimIntent(task.ID, it.ID, "w1") {
+		return fmt.Errorf("预置意图领取失败")
+	}
+	if got := st.Intents(task.ID)[0].State; got != store.IntentRunning {
+		return fmt.Errorf("预置状态应为 running，实际 %s", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := eng.RunTask(ctx, task.ID); err != nil {
+		return err
+	}
+	if got := st.Intents(task.ID)[0].State; got != store.IntentDone {
+		return fmt.Errorf("续跑应把遗留的 running 意图重新执行完，实际 %s", got)
+	}
+	return nil
+}
+
+// checkViolationScoped 锁住"越界台账按任务隔离"这条契约。
+//
+// 真实故障：CheckDial 记越界时没带 TaskID（落成 0），查询端又把 TaskID==0 当成
+// "全局记录"塞进每个任务视图 —— 结果是历史的 15 条 network 拦截永远挂在新任务下面，
+// 看起来像"修了也没生效"。
+func checkViolationScoped() error {
+	st := store.NewMemory()
+	t1, err := st.CreateTask(store.Task{Name: "a", Goal: "g", Workers: 1})
+	if err != nil {
+		return err
+	}
+	t2, err := st.CreateTask(store.Task{Name: "b", Goal: "g", Workers: 1})
+	if err != nil {
+		return err
+	}
+	st.RecordViolation(gate.Violation{TaskID: t1.ID, Layer: gate.LayerNetwork, Target: "203.0.113.1", Reason: "越界"})
+	// 早期版本写入的无任务号记录
+	st.RecordViolation(gate.Violation{TaskID: 0, Layer: gate.LayerNetwork, Target: "203.0.113.2", Reason: "legacy"})
+
+	if n := len(st.Violations(t1.ID)); n != 1 {
+		return fmt.Errorf("任务 1 应只有自己的 1 条越界，实际 %d", n)
+	}
+	if n := len(st.Violations(t2.ID)); n != 0 {
+		return fmt.Errorf("任务 2 不应看到任何越界（历史记录不能串台），实际 %d", n)
+	}
+	return nil
+}
+
+// funcResolver 让测试可以模拟"每次解析返回不同 IP"（CDN 的典型行为）。
+type funcResolver func(ctx context.Context, host string) ([]netip.Addr, error)
+
+func (f funcResolver) Lookup(ctx context.Context, host string) ([]netip.Addr, error) { return f(ctx, host) }
+
+// checkCDNPin 锁住这条契约：**授权的对象是域名，不是某一批 IP**。
+//
+// 真实故障：cosori.com 解析到 Cloudflare 轮询出的 8 个不同 IP，
+// 第 2 层钉住第一批，执行阶段解析到新 IP 就被第 3 层当成越界，
+// 用户看到"我明明授权了域名，却整页都是网络层拦截"。
+func checkCDNPin() error {
+	sc, err := scope.New([]scope.Rule{{Kind: scope.KindDomainSuffix, Value: "cdn.test"}})
+	if err != nil {
+		return err
+	}
+	cur := netip.MustParseAddr("10.20.0.5")
+	res := funcResolver(func(_ context.Context, _ string) ([]netip.Addr, error) {
+		return []netip.Addr{cur}, nil
+	})
+	g := gate.New(sc, res, nil)
+	ctx := context.Background()
+
+	dec := g.CheckTool(ctx, 1, 1, "curl", []byte(`{"url":"http://www.cdn.test/"}`))
+	if !dec.Allowed {
+		return fmt.Errorf("授权域名应放行: %s", dec.Reason)
+	}
+	if err := g.CheckDial(cur); err != nil {
+		return fmt.Errorf("第一轮解析出的 IP 应可拨: %v", err)
+	}
+
+	// CDN 换了一批 IP：未补钉时第 3 层必须拦住（否则等于放行任意 IP）
+	next := netip.MustParseAddr("10.20.0.9")
+	if err := g.CheckDial(next); err == nil {
+		return fmt.Errorf("未经域名解析的新 IP 不应直接放行")
+	}
+	// preflight 会把本次解析结果补钉，补钉后应放行
+	g.PinIPs([]netip.Addr{next})
+	if err := g.CheckDial(next); err != nil {
+		return fmt.Errorf("同一授权域名解析出的新 IP 应放行: %v", err)
+	}
+
+	// AdmitHost 必须同时把 IP 钉住：CheckDial 只认 pinned，
+	// 只记"域名→IP"缓存是不算数的（曾经因此让授权域名满屏 network 拦截）。
+	fresh := netip.MustParseAddr("10.20.0.77")
+	if err := g.AdmitHost("www.cdn.test", []netip.Addr{fresh}); err != nil {
+		return fmt.Errorf("AdmitHost 应接受授权子域: %v", err)
+	}
+	if err := g.CheckDial(fresh); err != nil {
+		return fmt.Errorf("AdmitHost 之后 CheckDial 必须放行: %v", err)
+	}
+	// 元数据地址是永久红线，pin 也不能放行
+	meta := netip.MustParseAddr("169.254.169.254")
+	g.PinIPs([]netip.Addr{meta})
+	if err := g.CheckDial(meta); err == nil {
+		return fmt.Errorf("云元数据地址不能被钉住放行")
+	}
+	// 未授权域名即使传 IP 也不能被放行
+	if err := g.AdmitHost("evil.other.test", []netip.Addr{netip.MustParseAddr("10.20.0.88")}); err == nil {
+		return fmt.Errorf("范围外域名不应被 AdmitHost 放行")
+	}
+	return nil
+}
+
+// checkPlannerEnv 锁住"模型知道自己跑在什么环境里"这条契约。
+// 没有它，模型会按 Linux 习惯生成 getent / ss / 管道串联，全部撞在沙箱或工具缺失上。
+func checkPlannerEnv() error {
+	st := store.NewMemory()
+	t, err := st.CreateTask(store.Task{Name: "env", Goal: "环境注入", Workers: 1})
+	if err != nil {
+		return err
+	}
+	p := planner.NewWithEnv(settings.Open(""), func() planner.Env {
+		return planner.Env{
+			OS: "windows", Arch: "amd64",
+			Tools:   []string{"curl", "nmap"},
+			Missing: []string{"dig", "sqlmap"},
+		}
+	})
+	_, user := p.PromptFor(t, st)
+	for _, want := range []string{"执行环境", "windows/amd64", "curl, nmap", "dig, sqlmap", "getent"} {
+		if !strings.Contains(user, want) {
+			return fmt.Errorf("提示词缺少 %q：\n%s", want, excerptOf(user))
+		}
+	}
+
+	// 不注入 env 时保持原样（避免把测试专用文案泄漏到默认路径）
+	_, plain := planner.New(settings.Open("")).PromptFor(t, st)
+	if strings.Contains(plain, "## 执行环境") {
+		return fmt.Errorf("未注入 env 时不应出现执行环境段")
+	}
+	return nil
 }
 
 func testScope() *scope.Scope {

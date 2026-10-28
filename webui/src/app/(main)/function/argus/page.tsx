@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ShieldCheck, RefreshCw, Play, AlertTriangle, ShieldAlert, Lock } from "lucide-react";
+import { ShieldCheck, RefreshCw, Play, Square, AlertTriangle, ShieldAlert, Lock, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -192,6 +192,32 @@ export default function ArgusPage() {
     }
   }
 
+  async function delTask(id: number, name: string) {
+    if (!window.confirm(`删除任务「${name || "#" + id}」？\n会同时删除它的意图、漏洞与资产（证据与越界台账保留）。`)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await fetch(`${BASE}/tasks/${id}`, { method: "DELETE" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (activeId === id) {
+        setActiveId(0);
+        setDetail(null);
+        setIntents([]);
+        setFindings([]);
+        setViolations([]);
+        setEvidence([]);
+        setReport("");
+      }
+      setErr("");
+      await loadTasks();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function startTask() {
     if (!activeId) return;
     setBusy(true);
@@ -203,11 +229,30 @@ export default function ArgusPage() {
     }
   }
 
+  async function stopTask() {
+    if (!activeId) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`${BASE}/tasks/${activeId}/stop`, { method: "POST" });
+      if (!r.ok && r.status !== 409) {
+        const d = (await r.json().catch(() => ({}))) as { error?: string };
+        throw new Error(d.error || `HTTP ${r.status}`);
+      }
+      setErr("");
+      await loadTasks();
+      await loadDetail(activeId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="flex h-full flex-col gap-4 overflow-auto p-4">
       <div className="flex flex-wrap items-center gap-3">
         <ShieldCheck className="size-5 text-primary" />
-        <h1 className="text-lg font-semibold">ARGUS 安全内核</h1>
+        <h1 className="text-lg font-semibold">ARGUS</h1>
         <Badge variant="outline" className={online ? "border-emerald-500/40 text-emerald-400" : "border-rose-500/40 text-rose-400"}>
           {online ? "真实后端已连接" : "后端未连接"}
         </Badge>
@@ -217,6 +262,14 @@ export default function ArgusPage() {
         <div className="ml-auto flex gap-2">
           <Button variant="outline" size="sm" onClick={() => { void loadTasks(); void loadDetail(activeId); }}>
             <RefreshCw className="mr-1 size-3.5" /> 刷新
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void stopTask()}
+            disabled={!activeId || busy || !detail?.running}
+          >
+            <Square className="mr-1 size-3.5" /> 停止
           </Button>
           <Button size="sm" onClick={() => void startTask()} disabled={!activeId || busy || !!detail?.running}>
             <Play className="mr-1 size-3.5" /> 启动
@@ -292,20 +345,34 @@ export default function ArgusPage() {
             ) : null}
             {tasks.length === 0 ? <p className="text-xs text-muted-foreground">暂无任务</p> : null}
             {tasks.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setActiveId(t.id)}
-                className={`rounded-md border px-3 py-2 text-left transition ${
-                  t.id === activeId ? "border-primary/60 bg-primary/10" : "border-border hover:bg-muted/50"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">{t.name || `任务 #${t.id}`}</span>
-                  <Badge variant="outline" className={`ml-auto ${stateClass(t.state)}`}>{t.state}</Badge>
-                </div>
-                <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{t.goal}</p>
-              </button>
+              <div key={t.id} className="group relative">
+                <button
+                  type="button"
+                  onClick={() => setActiveId(t.id)}
+                  className={`w-full rounded-md border px-3 py-2 pr-7 text-left transition ${
+                    t.id === activeId ? "border-primary/60 bg-primary/10" : "border-border hover:bg-muted/50"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium">{t.name || `任务 #${t.id}`}</span>
+                    <Badge variant="outline" className={`ml-auto ${stateClass(t.state)}`}>{t.state}</Badge>
+                  </div>
+                  <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{t.goal}</p>
+                </button>
+                <button
+                  type="button"
+                  title="删除任务"
+                  aria-label={`删除任务 ${t.name || t.id}`}
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void delTask(t.id, t.name);
+                  }}
+                  className="absolute right-1 top-1 rounded p-0.5 text-muted-foreground opacity-0 transition hover:bg-rose-500/15 hover:text-rose-400 group-hover:opacity-100"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
             ))}
           </CardContent>
         </Card>

@@ -1,0 +1,54 @@
+name: pg-bootstrap
+
+# 目的：在干净的 Windows runner 上生成一个「已初始化」的 PostgreSQL 数据目录，
+# 供开发机直接下载使用。
+#
+# 为什么需要：开发机的 DLP 让 initdb 无法完成（它 popen 子进程时标准输出句柄为 NULL，
+# 实测 GetStdHandle 返回 0），这是环境限制而非代码问题。
+# CI runner 没有 DLP，initdb 正常，产出的 data 目录同平台可直接启动。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-pgdata:
+    runs-on: windows-latest
+    steps:
+      - name: Download PostgreSQL 16.4 binaries
+        shell: pwsh
+        run: |
+          curl.exe -L --fail -o pg.zip https://get.enterprisedb.com/postgresql/postgresql-16.4-1-windows-x64-binaries.zip
+          Expand-Archive pg.zip -DestinationPath .
+          Get-ChildItem pgsql/bin -Filter initdb.exe | ForEach-Object { Write-Output $_.FullName }
+
+      - name: initdb (trust auth, UTF8, C locale)
+        shell: pwsh
+        run: |
+          .\pgsql\bin\initdb.exe -D data -U artex --auth=trust --encoding=UTF8 --locale=C
+          if (-not (Test-Path data\PG_VERSION)) { throw "initdb did not produce PG_VERSION" }
+          Get-Content data\PG_VERSION
+
+      - name: Pack data directory
+        shell: pwsh
+        run: |
+          Compress-Archive -Path data -DestinationPath pgdata.zip -CompressionLevel Optimal
+          Get-Item pgdata.zip | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgdata-windows-amd64
+          path: pgdata.zip
+          if-no-files-found: error
+
+      - name: Also publish the binaries archive
+        shell: pwsh
+        run: |
+          # 只把 bin + lib + share 打进去（不含 doc/pgAdmin），体积小很多
+          Compress-Archive -Path pgsql\bin, pgsql\lib, pgsql\share -DestinationPath pgsql-core.zip -CompressionLevel Optimal
+          Get-Item pgsql-core.zip | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgsql-core-windows-amd64
+          path: pgsql-core.zip
+          if-no-files-found: error

@@ -44,6 +44,24 @@ jobs:
       - name: Test ARGUS packages
         run: go test ./internal/... -count=1
 
+      # Windows 二进制：开发机无法本地编译（DLP 加密依赖），由 CI 交叉编译产出。
+      - name: Build Windows binary
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o dist/argus-fusion-windows-amd64.exe ./cmd/artex
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: argus-fusion-windows-amd64
+          path: dist/argus-fusion-windows-amd64.exe
+          if-no-files-found: warn
+
       # 与 baseline 完全相同的就绪判定：端口能连就算启动（不要求 API 200）
       - name: Startup (same readiness probe as baseline)
         run: |

@@ -1,18 +1,18 @@
-ok  	github.com/Autumn-27/artex/internal/budget	0.003s
+ok  	github.com/Autumn-27/artex/internal/budget	0.006s
 ok  	github.com/Autumn-27/artex/internal/dedupe	0.003s
 ?   	github.com/Autumn-27/artex/internal/discover	[no test files]
 ?   	github.com/Autumn-27/artex/internal/egress	[no test files]
-ok  	github.com/Autumn-27/artex/internal/evidence	0.025s
+ok  	github.com/Autumn-27/artex/internal/evidence	0.013s
 --- FAIL: TestPinExpires (0.00s)
     gate_test.go:114: 过期钉住项应被清理，实际 1
 FAIL
-FAIL	github.com/Autumn-27/artex/internal/gate	0.004s
+FAIL	github.com/Autumn-27/artex/internal/gate	0.005s
 ?   	github.com/Autumn-27/artex/internal/netguard	[no test files]
 --- FAIL: TestScopeExactURL (0.00s)
     scope_test.go:93: 不同 path 前缀应拒绝
     scope_test.go:96: scheme 不同应拒绝
 FAIL
-FAIL	github.com/Autumn-27/artex/internal/scope	0.002s
+FAIL	github.com/Autumn-27/artex/internal/scope	0.003s
 ?   	github.com/Autumn-27/artex/internal/store	[no test files]
 --- FAIL: TestCheckCommand (0.00s)
     guard_test.go:46: 应拒绝却放行了: mkfs.ext4 /dev/sda1

@@ -2,7 +2,7 @@ name: argus-step
 
 on:
   push:
-    branches: [argus]
+    branches: [main]
   workflow_dispatch:
 
 permissions:

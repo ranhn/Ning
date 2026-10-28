@@ -4,24 +4,37 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/Autumn-27/artex/internal/toolbox"
 )
 
-// ArgusAdapter 鎶?Gate 鏀舵垚 guard 鍖呰鐨勭獎鎺ュ彛 (allowed, reason)銆?
+// ArgusAdapter 把 Gate 收成 guard 包要的窄接口 (allowed, reason)。
 //
-// guard 鍖呬綅浜?ARTEX 渚э紝鍙璇?鍏佷笉鍏佽 + 涓€鍙ュ師鍥?锛?
-// 闂搁棬鐨?Decision 缁撴瀯锛堝眰/鐩爣/鍘熷洜锛変笉閫傚悎鐩存帴璺ㄥ寘浼犻€掞紝鎵€浠ュ湪杩欎竴灞傛敹鍙ｃ€?
+// guard 包位于 ARTEX 侧，只认识"允不允许 + 一句原因"；
+// 闸门的 Decision 结构（层/目标/原因）不适合直接跨包传递，所以在这一层收口。
+//
+// 判定顺序（先硬后软）：
+//  1. 命令沙箱：拦破坏性/提权/反弹 shell（与范围无关，始终生效）
+//  2. 范围闸门：任务声明了范围才判定；未声明时保持基线行为
 type ArgusAdapter struct {
 	G      *Gate
 	TaskID int64
 }
 
-// CheckToolRaw 瀹炵幇 guard.ArgusGate銆?
+// CheckToolRaw 实现 guard.ArgusGate。
 func (a *ArgusAdapter) CheckToolRaw(ctx context.Context, tool string, input []byte) (bool, string) {
+	// ① 命令层：ARTEX 的 Bash 是直通完整 shell，这一层挡住真正危险的动作。
+	//    放在范围判定之前，因为"rm -rf /"即使在授权范围内也不该执行。
+	if reason := sandboxCheck(tool, input); reason != "" {
+		return false, reason
+	}
+
+	// ② 范围层
 	if a == nil || a.G == nil {
 		return true, ""
 	}
-	var raw json.RawMessage = input
-	dec := a.G.CheckTool(ctx, a.TaskID, 0, tool, raw)
+	dec := a.G.CheckTool(ctx, a.TaskID, 0, tool, json.RawMessage(input))
 	if dec.Allowed {
 		return true, ""
 	}
@@ -29,5 +42,32 @@ func (a *ArgusAdapter) CheckToolRaw(ctx context.Context, tool string, input []by
 	if layer == "" {
 		layer = "scope"
 	}
-	return false, fmt.Sprintf("鑼冨洿闂搁棬鎷掔粷锛?s 灞傦級锛?s", layer, dec.Reason)
+	return false, fmt.Sprintf("范围闸门拒绝（%s 层）：%s", layer, dec.Reason)
+}
+
+// sandboxCheck 对"直通 shell"的工具做命令校验，返回空串表示通过。
+func sandboxCheck(tool string, input []byte) string {
+	switch {
+	case strings.EqualFold(tool, "Bash"),
+		strings.EqualFold(tool, "shell_open"),
+		strings.EqualFold(tool, "shell_send"):
+	default:
+		return ""
+	}
+	var in struct {
+		Command string `json:"command"`
+		Text    string `json:"text"`
+	}
+	_ = json.Unmarshal(input, &in)
+	cmd := in.Command
+	if strings.TrimSpace(cmd) == "" {
+		cmd = in.Text
+	}
+	if strings.TrimSpace(cmd) == "" {
+		return ""
+	}
+	if err := toolbox.CheckCommand(cmd); err != nil {
+		return "命令沙箱拒绝：" + err.Error()
+	}
+	return ""
 }

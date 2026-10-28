@@ -1,11 +1,11 @@
 <div align="center">
 
-# ARTEX
+# Ning
 
 AI autonomous penetration testing system (Go backend + Next.js frontend)
 
 
- Fork of [ARTEX by Autumn-27](https://github.com/Autumn-27) · English translation of the Chinese source · maintained publicly under AGPL-3.0
+ Fork of [Ning by Autumn-27](https://github.com/Autumn-27) · English translation of the Chinese source · maintained publicly under AGPL-3.0
 
 </div>
 
@@ -48,15 +48,15 @@ AI autonomous penetration testing system (Go backend + Next.js frontend)
 ## Approval record details
 
 The global "Approval Records", the in-task "Interception Approvals", and the approval cards in conversations all support expanding to view details. The display structure references the
-[AegisHook approval details component](https://github.com/RuoJi6/AegisHook/blob/main/web/src/components/CallDetail.vue), reusing ARTEX's components and theme:
+[AegisHook approval details component](https://github.com/RuoJi6/AegisHook/blob/main/web/src/components/CallDetail.vue), reusing Ning's components and theme:
 
 
 ## Traffic capture browser extension
 
-The bundled browser extension (`extension/`) turns your own browsing into agent-visible evidence: log into an authenticated target once (captchas, email OTP and 2FA included), and the captured requests/responses land in ARTEX's traffic store like proxy-recorded traffic, ready to search and bind to findings:
+The bundled browser extension (`extension/`) turns your own browsing into agent-visible evidence: log into an authenticated target once (captchas, email OTP and 2FA included), and the captured requests/responses land in Ning's traffic store like proxy-recorded traffic, ready to search and bind to findings:
 
 - Load the unpacked extension from `extension/` (Chrome/Edge, Developer Mode → Load unpacked);
-- In the popup, set your ARTEX URL and token, then press **Start capture** on the tab you are browsing;
+- In the popup, set your Ning URL and token, then press **Start capture** on the tab you are browsing;
 - Use the site normally; text requests/responses are batched to `POST /api/traffic/ingest` (authenticated). Binary bodies (images, fonts) are skipped, bodies are truncated at 256 KiB, batches are capped at 50 entries;
 - Press **Stop** when done. Everything stays in your local traffic store.
 
@@ -66,7 +66,7 @@ Sync asset data directly from [ScopeSentry](https://github.com/Autumn-27/ScopeSe
 
 - On the "**Asset Sync**" page, enter the ScopeSentry address and API Key to connect the data source;
 - Choose the targets and asset types to sync by **project** or **task** (domains / subdomains / IPs / ports / sites / endpoints…);
-- One-click import, merged by company asset scope, straight into ARTEX's asset graph for agents to explore.
+- One-click import, merged by company asset scope, straight into Ning's asset graph for agents to explore.
 
 ---
 
@@ -78,7 +78,7 @@ Sync asset data directly from [ScopeSentry](https://github.com/Autumn-27/ScopeSe
 
 ```bash
 git clone https://github.com/BaaRai/ARTEX.git
-cd ARTEX
+cd Ning
 ./install.sh
 ```
 
@@ -93,7 +93,7 @@ Once installed, open **http://localhost:8787** (on first entry, `/setup` sets th
 
 ```bash
 git clone https://github.com/BaaRai/ARTEX.git
-cd ARTEX
+cd Ning
 cp .env.example .env          # set POSTGRES_PASSWORD, optionally ANTHROPIC_API_KEY
 docker compose up -d          # pulls the autumn27/artex image + postgres
 # → http://localhost:8787
@@ -178,7 +178,7 @@ Daily cron example (03:20, operator crontab):
 ### Option 1: one-click update script
 
 ```bash
-cd ARTEX
+cd Ning
 ./update.sh
 ```
 
@@ -190,7 +190,7 @@ The script first optionally `git pull`s the latest code, then lets you choose **
 ### Option 2: Docker Compose (manual)
 
 ```bash
-cd ARTEX
+cd Ning
 git pull                       # update compose / scripts (optional)
 # pin a version: set ARTEX_TAG=v0.2.0 in .env; otherwise latest is used
 docker compose pull artex
@@ -300,7 +300,7 @@ In this version, history is viewed via vulnerability details and sessions; it is
 
 ## System architecture
 
-ARTEX is an **LLM multi-agent-driven autonomous penetration testing system**: a Go monolithic backend (with embedded Next.js frontend) + PostgreSQL; agent capabilities are provided by the [`norma`](https://github.com/Autumn-27/norma) SDK (`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`). At its core is a **dual-graph architecture**, plus two autonomy mechanisms built around it: **process-level information exchange between workers** and the **planner's multi-round shared todolist that stabilizes attack chains**.
+Ning is an **LLM multi-agent-driven autonomous penetration testing system**: a Go monolithic backend (with embedded Next.js frontend) + PostgreSQL; agent capabilities are provided by the [`norma`](https://github.com/Autumn-27/norma) SDK (`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`). At its core is a **dual-graph architecture**, plus two autonomy mechanisms built around it: **process-level information exchange between workers** and the **planner's multi-round shared todolist that stabilizes attack chains**.
 
 ### Overall layering
 
@@ -464,7 +464,7 @@ flowchart TB
   R3["round 3 (② produced a fact)  dispatch intent ③"] --> T3
 ```
 
-Thus, even in an "event-driven + stateless session" environment, the attack chain still **advances steadily, without repetition or reordering**: this is the key to ARTEX autonomously completing multi-step exploitation chains.
+Thus, even in an "event-driven + stateless session" environment, the attack chain still **advances steadily, without repetition or reordering**: this is the key to Ning autonomously completing multi-step exploitation chains.
 
 ---
 
@@ -483,7 +483,7 @@ This means anyone may freely use, modify, and distribute this project, but **der
 
 > ⚠️ **Important**: the open source license itself does not restrict how the software is used. The "Usage restrictions" and "Disclaimer" below are additional terms and a solemn statement from the maintainers to users, so please abide by them.
 
-**ARTEX is an offensive-security tool. Use it only against systems you own, or that you are explicitly authorized to test (your own lab, your organization's assets, or a bug bounty / vulnerability disclosure program's targets within its published scope and rules of engagement). Any use without authorization is a violation of these terms.**
+**Ning is an offensive-security tool. Use it only against systems you own, or that you are explicitly authorized to test (your own lab, your organization's assets, or a bug bounty / vulnerability disclosure program's targets within its published scope and rules of engagement). Any use without authorization is a violation of these terms.**
 
 ### Permitted use
 

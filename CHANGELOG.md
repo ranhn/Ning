@@ -678,7 +678,7 @@ First release of this fork. The engine underneath is still upstream's, but this 
 
 #### Added
 
-- Added `reset-password.sh` to reset the admin (username fixed as `ARTEX`) password: supports both local / docker deployments; connection info can be specified explicitly or read automatically from `--dsn`/`$ARTEX_PG_DSN`/`config.json`; uses `pgcrypto` in the database to generate a bcrypt hash compatible with backend login and writes it back to `settings.auth.password_hash`, no service restart needed after reset. The password is passed via an environment variable, never enters the process argv, and is escaped against injection.
+- Added `reset-password.sh` to reset the admin (username fixed as `Ning`) password: supports both local / docker deployments; connection info can be specified explicitly or read automatically from `--dsn`/`$ARTEX_PG_DSN`/`config.json`; uses `pgcrypto` in the database to generate a bcrypt hash compatible with backend login and writes it back to `settings.auth.password_hash`, no service restart needed after reset. The password is passed via an environment variable, never enters the process argv, and is escaped against injection.
 
 ### Contributors
 

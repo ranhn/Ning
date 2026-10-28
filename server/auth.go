@@ -25,7 +25,9 @@ const (
 	// The lower bound matches the setup page's frontend validation — validation that
 	// lives only in the frontend is as good as none: hitting the API directly bypasses
 	// it. The upper bound is bcrypt's hard limit: past 72 bytes GenerateFromPassword returns ErrPasswordTooLong; rejecting early beats a cryptic "password encryption failed".
-	minPasswordRunes = 8
+	// 默认凭据是 Ning/Ning，密码只有 4 个字符，所以下限放到 4。
+	// 仍保留上限（bcrypt 的 72 字节硬限制）。
+	minPasswordRunes = 4
 	maxPasswordBytes = 72
 )
 
@@ -83,10 +85,13 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 	return buf, nil
 }
 
-// signJWT issues a 7-day HS256 token for user ARTEX.
+// defaultUsername 是内置管理员账号（密码见 authPassKey 的种子逻辑）。
+const defaultUsername = "Ning"
+
+// signJWT issues a 7-day HS256 token for the built-in administrator.
 func signJWT(key []byte) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-		Subject:   "ARTEX",
+		Subject:   defaultUsername,
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(jwtTTL)),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 	}).SignedString(key)
@@ -135,6 +140,33 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// seedDefaultCredential 首次启动时写入默认账号密码（Ning / Ning）。
+//
+// 为什么不再依赖 /setup：默认凭据是为了"开箱即用"，而 setup 流程要求第一次访问
+// 就设置密码，在无人值守部署里等于把所有人挡在门外。
+// 只在数据库里没有密码时写入，改过密码后重启不会被重置。
+func (s *Server) seedDefaultCredential() {
+	if s.m == nil || s.m.pg == nil {
+		return
+	}
+	if hash, ok, err := s.m.pg.GetSetting(authPassKey); err != nil || (ok && hash != "") {
+		return
+	}
+	b, err := bcrypt.GenerateFromPassword([]byte(defaultUsername), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("[auth] 默认凭据生成失败: %v", err)
+		return
+	}
+	inserted, err := s.m.pg.InsertSettingIfAbsent(authPassKey, string(b))
+	if err != nil {
+		log.Printf("[auth] 默认凭据写入失败: %v", err)
+		return
+	}
+	if inserted {
+		log.Printf("[auth] 已初始化默认凭据：%s / %s（建议登录后立即修改）", defaultUsername, defaultUsername)
+	}
 }
 
 // GET /api/auth/status — reports whether the admin password has been initialised.
@@ -272,7 +304,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "Invalid request format")
 		return
 	}
-	if req.Username != "ARTEX" {
+	if req.Username != defaultUsername {
 		writeErr(w, 401, "Incorrect username or password")
 		return
 	}

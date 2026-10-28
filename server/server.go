@@ -151,6 +151,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+	// 首次启动写入默认管理员凭据（Ning / Ning），开箱即用。
+	// 已有密码时不覆盖（改了密码重启不会被重置）。
+	s.seedDefaultCredential()
 	s.initSideQuestions()
 	// Circuit-breaker thresholds/cooldowns are hot parameters on the failure path; push the global retry policy to the Registry once at startup,
 	// and again on every policy save (saveLLMRetryPolicy).

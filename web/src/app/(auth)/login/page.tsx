@@ -68,7 +68,7 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
     try {
-      const { token } = await api.login("ARTEX", password);
+      const { token } = await api.login("Ning", password);
       auth.setToken(token);
       window.location.replace("/function/tasks");
     } catch {
@@ -95,7 +95,7 @@ export default function LoginPage() {
           <div className="absolute size-60 rounded-full border border-primary-foreground/15" />
           <div className="absolute size-40 rounded-full border border-primary-foreground/20" />
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="ARTEX" width={160} height={160} className="relative brightness-0 invert" />
+          <img src="/logo.png" alt="Ning" width={160} height={160} className="relative brightness-0 invert" />
         </div>
       </div>
 
@@ -104,12 +104,12 @@ export default function LoginPage() {
         <div className="w-full max-w-md space-y-10 py-24 lg:py-32">
           <div className="space-y-4 text-center">
             <h2 className="text-2xl font-medium tracking-tight">Sign in</h2>
-            <p className="mx-auto max-w-xl text-muted-foreground">Welcome back — enter your password to continue using ARTEX</p>
+            <p className="mx-auto max-w-xl text-muted-foreground">Welcome back — enter your password to continue using Ning</p>
           </div>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="space-y-1.5">
               <Label htmlFor="username">Username</Label>
-              <Input id="username" value="ARTEX" readOnly className="bg-muted text-muted-foreground" />
+              <Input id="username" value="Ning" readOnly className="bg-muted text-muted-foreground" />
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="password">Password</Label>
@@ -156,7 +156,7 @@ export default function LoginPage() {
               <ShieldCheck className="size-5" />
             </div>
             <div className="space-y-0.5">
-              <DialogTitle className="text-base">ARTEX Terms of Use and Disclaimer</DialogTitle>
+              <DialogTitle className="text-base">Ning Terms of Use and Disclaimer</DialogTitle>
               <p className="text-xs text-muted-foreground">
                 Version v1.1 · Effective 2026-10-11 · Please read all the following terms in full before signing in
               </p>
@@ -169,7 +169,7 @@ export default function LoginPage() {
             className="max-h-[60vh] space-y-5 overflow-y-auto px-6 py-5 text-sm leading-relaxed text-muted-foreground"
           >
             <p className="rounded-lg border bg-muted/40 p-3 text-foreground/80">
-              This Terms of Use and Disclaimer (the "Statement") is the agreement between you and the ARTEX
+              This Terms of Use and Disclaimer (the "Statement") is the agreement between you and the Ning
               project authors and contributors regarding your use of this software. Please read it carefully and fully understand each provision before use, especially the disclaimer, liability-limitation, and prohibition clauses highlighted in bold or color blocks.
               <span className="font-medium text-foreground">
                 {" "}
@@ -185,7 +185,7 @@ export default function LoginPage() {
                 Article 1 · Definitions and Open-Source License
               </h4>
               <p className="pl-7">
-                This software (ARTEX) is an open-source program released under the GNU Affero General Public License
+                This software (Ning) is an open-source program released under the GNU Affero General Public License
                 v3.0 (AGPL-3.0). You may freely use, copy, modify, and distribute it under that license; however, any derivative work (including online services provided to third parties over a network) must likewise be open-sourced under
                 the AGPL-3.0 license with the complete corresponding source code made public to its users. The full AGPL-3.0 terms are governed by the accompanying LICENSE file.
               </p>

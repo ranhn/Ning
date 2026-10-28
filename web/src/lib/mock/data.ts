@@ -2909,7 +2909,7 @@ export const trafficDetail: TrafficDetail = {
   req: `GET /v1/orders?id=1002 HTTP/1.1
 Host: api.acme.com
 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
-User-Agent: ARTEX-worker/1.0
+User-Agent: Ning-worker/1.0
 Accept: application/json
 
 `,
@@ -3152,15 +3152,15 @@ const promptVars: PromptVar[] = [
 ];
 
 const promptVersions: PromptVersion[] = [
-  { version: 3, ts: T("2026-07-25T10:00:00Z"), note: "Strengthen authorization bypass probing guidance", template_text: "You are the ARTEX planner..." },
-  { version: 2, ts: T("2026-07-20T10:00:00Z"), note: "Initial minor tuning", template_text: "You are the ARTEX planner (v2)..." },
+  { version: 3, ts: T("2026-07-25T10:00:00Z"), note: "Strengthen authorization bypass probing guidance", template_text: "You are the Ning planner..." },
+  { version: 2, ts: T("2026-07-20T10:00:00Z"), note: "Initial minor tuning", template_text: "You are the Ning planner (v2)..." },
 ];
 
 export function agentDetail(key: string): AgentDetail {
   const a = agents.find((x) => x.key === key) ?? agents[1];
   return {
     agent: a,
-    prompt: `You are the ARTEX "${a.name}".\nGoal: {{.Goal}}\nAsset overview: {{.AssetSummary}}\nRoute hint: {{.RouteHint}}\nProceed with the exploration based on the above and write the results back to the graph via tools.`,
+    prompt: `You are the Ning "${a.name}".\nGoal: {{.Goal}}\nAsset overview: {{.AssetSummary}}\nRoute hint: {{.RouteHint}}\nProceed with the exploration based on the above and write the results back to the graph via tools.`,
     variables: promptVars,
     versions: promptVersions,
     visibility: { mcp: [1, 2], skill: ["api-recon", "playwright-cli"] },

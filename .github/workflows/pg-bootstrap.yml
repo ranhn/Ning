@@ -43,21 +43,18 @@ jobs:
           Compress-Archive -Path pgsql\bin, pgsql\lib, pgsql\share -DestinationPath pgsql-core.zip -CompressionLevel Optimal
           Get-ChildItem *.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
 
-      # 产物发布：直接提交到 pgdata 分支。
-      # 比 release 更可控（release 的 gh upload 在此环境反复失败），
-      # 且 raw.githubusercontent.com 可直接下载，不需要任何 token。
+      # 产物发布：提交到 pgdata 分支（raw 可直接下载，不需要 token）。
+      # 用最简单可靠的形式：从当前 HEAD 开新分支，只 add 两个 zip。
       - name: Publish artifacts to pgdata branch
         shell: pwsh
         run: |
           git config user.name "argus-ci"
           git config user.email "ci@local"
-          git checkout --orphan pgdata-tmp
-          git rm -rf . --quiet 2>$null
-          Copy-Item pgdata.zip $env:GITHUB_WORKSPACE\pgdata.zip -Force
-          Copy-Item pgsql-core.zip $env:GITHUB_WORKSPACE\pgsql-core.zip -Force
+          Get-ChildItem *.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
+          git checkout -B pgdata
           git add -f pgdata.zip pgsql-core.zip
           git commit -m "ci: initialized PostgreSQL 16.4 data (auto-generated)" --quiet
-          git push -f origin HEAD:pgdata
-          Write-Output "pushed to branch pgdata"
-          Write-Output ("pgdata.zip=" + [math]::Round((Get-Item pgdata.zip).Length/1MB,1) + "MB")
-          Write-Output ("pgsql-core.zip=" + [math]::Round((Get-Item pgsql-core.zip).Length/1MB,1) + "MB")
+          if ($LASTEXITCODE -ne 0) { Write-Output "nothing to commit (unexpected)"; exit 3 }
+          git push -f origin pgdata
+          if ($LASTEXITCODE -ne 0) { exit 4 }
+          Write-Output "pushed to pgdata branch"

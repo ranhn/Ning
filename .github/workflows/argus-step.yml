@@ -41,8 +41,16 @@ jobs:
           ls -lh dist
 
       # ARGUS 侧新增包的单测（命令沙箱的黑白名单、范围映射等）
+      # 失败时把结果也写进 ci-logs，方便无 token 自查。
       - name: Test ARGUS packages
-        run: go test ./internal/... -count=1
+        run: |
+          set +e
+          go test ./internal/... -count=1 2>&1 | tee /tmp/test.log
+          code=${PIPESTATUS[0]}
+          echo "test_exit=$code"
+          mkdir -p ci-logs
+          cp /tmp/test.log ci-logs/test.log 2>/dev/null || true
+          exit $code
 
       # Windows 二进制：开发机无法本地编译（DLP 加密依赖），由 CI 交叉编译产出。
       - name: Build Windows binary

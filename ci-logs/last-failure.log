@@ -1,0 +1,13 @@
+
+    _    ____ _____ _______  __
+   / \  |  _ \_   _| ____\ \/ /
+  / _ \ | |_) || | |  _|  \  /
+ / ___ \|  _ < | | | |___ /  \
+/_/   \_\_| \_\|_| |_____/_/\_\
+  AI autonomous penetration testing system
+  version dev  ·  linux/amd64  ·  go1.26.3  ·  listening on 127.0.0.1:8787
+
+2026/10/28 06:21:04 [config] config file: /home/runner/work/ARGUS/ARGUS/config.json (not found — will only try the environment variable ARTEX_PG_DSN)
+2026/10/28 06:21:04 [pg] database config source: environment variable ARTEX_PG_DSN
+--- run meta ---
+run_id=40643136559 sha=cfa46dd234e8dfa718598cbee9a108de3d475539 branch=argus

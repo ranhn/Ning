@@ -33,6 +33,10 @@ func (l LLM) Configured() bool {
 // Settings 是整体配置。
 type Settings struct {
 	LLM LLM `json:"llm"`
+	// 控制台"模型配置"里的多条配置；ActiveProfile 指向当前生效的那一条。
+	Profiles      []LLMProfile `json:"profiles,omitempty"`
+	ActiveProfile int64        `json:"active_profile,omitempty"`
+	SeqProfile    int64        `json:"seq_profile,omitempty"`
 	// 任务默认预算（0 = 用内置默认值）
 	TaskSteps int64 `json:"task_steps"`
 	TaskToken int64 `json:"task_tokens"`
@@ -118,6 +122,16 @@ func (s *Store) merge(in Settings) {
 	if in.TaskToken > 0 {
 		s.s.TaskToken = in.TaskToken
 	}
+	// 多配置列表必须完整带过来，否则"写盘成功、重启全丢"。
+	if len(in.Profiles) > 0 {
+		s.s.Profiles = in.Profiles
+	}
+	if in.ActiveProfile > 0 {
+		s.s.ActiveProfile = in.ActiveProfile
+	}
+	if in.SeqProfile > 0 {
+		s.s.SeqProfile = in.SeqProfile
+	}
 }
 
 // Get 返回配置副本（含密钥，仅服务端内部使用）。
@@ -127,8 +141,8 @@ func (s *Store) Get() Settings {
 	return s.s
 }
 
-// LLM 返回 LLM 配置副本。
-func (s *Store) LLM() LLM { return s.Get().LLM }
+// LLM 返回生效的 LLM 配置：优先使用激活的 profile，否则回退到单配置。
+func (s *Store) LLM() LLM { return s.ActiveLLM() }
 
 // Update 修改配置并落盘。fn 里改什么就存什么。
 func (s *Store) Update(fn func(*Settings)) error {
@@ -155,19 +169,24 @@ func (s *Store) Update(fn func(*Settings)) error {
 }
 
 // Masked 返回可安全回显的视图。
+// 注意：必须用 ActiveLLM()（激活的 profile），否则控制台里配好了模型，
+// /api/llm 仍会显示"未配置"——这正是之前"保存了但不生效"的来源。
 func (s *Store) Masked() map[string]any {
 	c := s.Get()
+	l := s.ActiveLLM()
 	return map[string]any{
-		"configured":      c.LLM.Configured(),
-		"provider":        c.LLM.Provider,
-		"model":           c.LLM.Model,
-		"base_url":        c.LLM.BaseURL,
-		"api_key_set":     c.LLM.APIKey != "",
-		"max_tokens":      c.LLM.MaxTokens,
-		"temperature":     c.LLM.Temperature,
-		"timeout_seconds": c.LLM.TimeoutSeconds,
+		"configured":      l.Configured(),
+		"provider":        l.Provider,
+		"model":           l.Model,
+		"base_url":        l.BaseURL,
+		"api_key_set":     l.APIKey != "",
+		"max_tokens":      l.MaxTokens,
+		"temperature":     l.Temperature,
+		"timeout_seconds": l.TimeoutSeconds,
 		"task_steps":      c.TaskSteps,
 		"task_tokens":     c.TaskToken,
+		"profiles":        len(c.Profiles),
+		"active_profile":  c.ActiveProfile,
 		"saved_at":        time.Now().UTC(),
 	}
 }

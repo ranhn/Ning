@@ -88,6 +88,11 @@ export default function ArgusPage() {
   const [err, setErr] = useState("");
   const [online, setOnline] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 新建任务表单（只填目标即可，种子意图由后端按范围自动生成）
+  const [newOpen, setNewOpen] = useState(false);
+  const [nTarget, setNTarget] = useState("");
+  const [nKind, setNKind] = useState("domain_suffix");
+  const [nGoal, setNGoal] = useState("");
 
   const loadTasks = useCallback(async () => {
     try {
@@ -149,6 +154,44 @@ export default function ArgusPage() {
     return { done, blocked, violTotal };
   }, [intents, layers]);
 
+  async function createTask() {
+    const target = nTarget.trim();
+    if (!target) return;
+    setBusy(true);
+    try {
+      const stamp = new Date().toISOString().slice(5, 16).replace(/[:T]/g, "");
+      const body = {
+        name: `${target.replace(/[^\w.\-/]/g, "_")}-${stamp}`,
+        goal: nGoal.trim() || `对 ${target} 进行授权范围内的信息收集与风险验证`,
+        scope: [{ kind: nKind, value: target }],
+        workers: 2,
+        minutes: 30,
+      };
+      const r = await fetch(`${BASE}/tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = (await r.json()) as { task?: Task; seed_intents?: number; error?: string };
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      const id = d.task?.id ?? 0;
+      if (id) {
+        await fetch(`${BASE}/tasks/${id}/start`, { method: "POST" });
+        setActiveId(id);
+        void loadDetail(id);
+      }
+      setNewOpen(false);
+      setNTarget("");
+      setNGoal("");
+      setErr("");
+      await loadTasks();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function startTask() {
     if (!activeId) return;
     setBusy(true);
@@ -192,9 +235,61 @@ export default function ArgusPage() {
       <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
         <Card className="h-fit">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">任务（{tasks.length}）</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">任务（{tasks.length}）</CardTitle>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setNewOpen((v) => !v)}
+              >
+                {newOpen ? "取消" : "+ 新建"}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="flex flex-col gap-1.5">
+            {newOpen ? (
+              <div className="mb-2 flex flex-col gap-1.5 rounded-md border border-dashed border-border p-2">
+                <input
+                  autoFocus
+                  value={nTarget}
+                  onChange={(e) => setNTarget(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void createTask();
+                  }}
+                  placeholder="目标：example.com / 10.0.0.5 / 10.0.0.0/24"
+                  className="w-full rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:border-primary"
+                />
+                <select
+                  value={nKind}
+                  onChange={(e) => setNKind(e.target.value)}
+                  className="w-full rounded border border-border bg-background px-2 py-1 text-xs"
+                >
+                  <option value="domain_suffix">域名后缀（含子域）</option>
+                  <option value="exact_domain">精确域名</option>
+                  <option value="exact_ip">单个 IP</option>
+                  <option value="cidr">网段 CIDR</option>
+                  <option value="exact_url">精确 URL</option>
+                </select>
+                <input
+                  value={nGoal}
+                  onChange={(e) => setNGoal(e.target.value)}
+                  placeholder="目标描述（可选）"
+                  className="w-full rounded border border-border bg-background px-2 py-1 text-xs outline-none focus:border-primary"
+                />
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={busy || !nTarget.trim()}
+                  onClick={() => void createTask()}
+                >
+                  {busy ? "创建中…" : "创建并启动"}
+                </Button>
+                <p className="text-[10px] leading-tight text-muted-foreground">
+                  种子意图按范围自动生成（nmap 端口识别 + curl 响应头），仍会过三层闸门
+                </p>
+              </div>
+            ) : null}
             {tasks.length === 0 ? <p className="text-xs text-muted-foreground">暂无任务</p> : null}
             {tasks.map((t) => (
               <button

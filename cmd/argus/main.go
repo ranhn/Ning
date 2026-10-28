@@ -244,25 +244,29 @@ func runServe(args []string) error {
 		log.Printf("执行器: sim（模拟执行，不调用真实工具）")
 	}
 	if *execMode != "sim" {
-		// 工具就绪度：缺失 = 没装；不匹配 = 同名不同工具（例如 Python 的 httpx），已禁用
-		var ready, missing, mismatch []string
-		for _, st := range tools.VerifyTools(context.Background()) {
-			switch st.State {
-			case "ok":
-				ready = append(ready, st.Name)
-			case "missing":
-				missing = append(missing, st.Name)
-			default:
-				mismatch = append(mismatch, st.Name)
+		// 工具指纹探测要起子进程（nmap/nuclei 的 -version 各需数秒），放到后台执行，
+		// 否则启动会被拖到近 10 秒。探测完成前 Plan 不做禁用判断，
+		// 真执行时若工具不可用仍会给出明确错误。
+		go func() {
+			var ready, missing, mismatch []string
+			for _, st := range tools.VerifyTools(context.Background()) {
+				switch st.State {
+				case "ok":
+					ready = append(ready, st.Name)
+				case "missing":
+					missing = append(missing, st.Name)
+				default:
+					mismatch = append(mismatch, st.Name)
+				}
 			}
-		}
-		log.Printf("工具就绪(%d): %s", len(ready), strings.Join(ready, ", "))
-		if len(missing) > 0 {
-			log.Printf("工具缺失(%d): %s —— 相关意图会被拦成「工具未安装」", len(missing), strings.Join(missing, ", "))
-		}
-		if len(mismatch) > 0 {
-			log.Printf("工具指纹不匹配(%d): %s —— 已禁用（同名不同工具，避免误用）", len(mismatch), strings.Join(mismatch, ", "))
-		}
+			log.Printf("工具就绪(%d): %s", len(ready), strings.Join(ready, ", "))
+			if len(missing) > 0 {
+				log.Printf("工具缺失(%d): %s —— 相关意图会被拦成「工具未安装」", len(missing), strings.Join(missing, ", "))
+			}
+			if len(mismatch) > 0 {
+				log.Printf("工具指纹不匹配(%d): %s —— 已禁用（同名不同工具，避免误用）", len(mismatch), strings.Join(mismatch, ", "))
+			}
+		}()
 	}
 	if !stg.LLM().Configured() {
 		log.Printf("提示: LLM 未配置，任务只会执行种子意图（不自主规划）。用 PUT /api/llm 或 ARGUS_LLM_* 环境变量配置。")

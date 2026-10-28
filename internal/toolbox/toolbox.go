@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,6 +42,9 @@ type Policy struct {
 	// 直接调用会得到莫名其妙的结果。版本输出里必须出现任一关键字，否则该工具被禁用。
 	VersionArgs []string
 	Fingerprint []string
+	// Strict 为 true 时，版本输出为空也视为指纹不匹配（禁用该工具）。
+	// 用于同名冲突风险极高的名字（例如 httpx：Python 库与 ProjectDiscovery 扫描器同名）。
+	Strict bool
 }
 
 // DefaultPolicies 返回内置白名单。刻意保守：写文件/读配置/调脚本的参数全部禁掉。
@@ -80,8 +84,10 @@ func DefaultPolicies() map[string]Policy {
 			BadFlags:    []string{"-o", "-json", "-config"},
 			AllowAbs:    []string{"/opt/pd-templates"},
 			VersionArgs: []string{"-version"},
-			// Python 的 httpx 库也是这个名字，但它不认 -u/-l，必须靠指纹排除
-			Fingerprint: []string{"projectdiscovery", "httpx"},
+			// Python 的 httpx 库也是这个名字，但它不认 -u/-l，必须靠指纹排除；
+			// 严格模式：它的 -version 输出为空，所以空输出也判为不匹配。
+			Fingerprint: []string{"projectdiscovery"},
+			Strict:      true,
 		},
 		"dig": {
 			Bin:         "dig",
@@ -216,7 +222,7 @@ func (e *Executor) Plan(cmdline string) (*Plan, error) {
 	if !ok {
 		return nil, &ErrNotAllowed{Reason: fmt.Sprintf("工具 %q 不在白名单内（可用：%s）", argv[0], e.allowedNames())}
 	}
-	if reason, bad := e.disabled[tool]; bad {
+	if reason, bad := e.disabledReason(tool); bad {
 		return nil, &ErrNotAllowed{Reason: fmt.Sprintf("工具 %q 不可用：%s", tool, reason)}
 	}
 	if pol.MaxArgs > 0 && len(argv)-1 > pol.MaxArgs {
@@ -292,7 +298,28 @@ type Executor struct {
 
 	// disabled 记录 VerifyTools 判定为不可用的工具（name → 原因）。
 	// Plan 会拒绝这些工具，避免"同名不同工具"被误用。
+	// 探测在后台异步进行，因此读写都要加锁。
+	mu       sync.RWMutex
 	disabled map[string]string
+}
+
+// setDisabled 线程安全地记录/清除某个工具的禁用原因（reason 为空表示可用）。
+func (e *Executor) setDisabled(name, reason string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if reason == "" {
+		delete(e.disabled, name)
+		return
+	}
+	e.disabled[name] = reason
+}
+
+// disabledReason 返回工具被禁用的原因。
+func (e *Executor) disabledReason(name string) (string, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	r, ok := e.disabled[name]
+	return r, ok
 }
 
 // New 构造执行器。WorkDir 为空表示用系统临时目录下固定子目录。
@@ -326,13 +353,13 @@ func (e *Executor) VerifyTools(ctx context.Context) []ToolStatus {
 		if err != nil {
 			st.State = "missing"
 			st.Detail = "未安装（" + bin + "）"
-			e.disabled[name] = st.Detail
+			e.setDisabled(name, st.Detail)
 			out = append(out, st)
 			continue
 		}
 		st.Bin = path
 		if len(pol.Fingerprint) > 0 && len(pol.VersionArgs) > 0 {
-			outv := runVersion(ctx, path, pol.VersionArgs)
+			outv, verr := runVersion(ctx, path, pol.VersionArgs)
 			low := strings.ToLower(outv)
 			matched := false
 			for _, fp := range pol.Fingerprint {
@@ -341,30 +368,50 @@ func (e *Executor) VerifyTools(ctx context.Context) []ToolStatus {
 					break
 				}
 			}
-			if !matched {
+			switch {
+			case matched:
+				// 正常
+			case verr != nil && strings.TrimSpace(outv) == "" && !pol.Strict:
+				// 探测阶段跑不起来（EDR 拦截 / 依赖缺失等）不代表工具身份有问题，
+				// 不能据此禁用；真正执行时若失败会有明确错误，比"指纹不匹配"更好排查。
+				// 严格模式（Strict）不适用此豁免——那类工具必须自证身份。
+				st.Detail = "版本探测未返回内容，跳过指纹校验"
+			default:
 				st.State = "mismatch"
-				st.Detail = fmt.Sprintf("版本指纹不匹配（%s 输出里没有 %s）",
-					strings.Join(pol.VersionArgs, " "), strings.Join(pol.Fingerprint, "/"))
-				e.disabled[name] = st.Detail
+				st.Detail = fmt.Sprintf("版本指纹不匹配（%s 输出里没有 %s）：%s",
+					strings.Join(pol.VersionArgs, " "), strings.Join(pol.Fingerprint, "/"), firstLine(outv))
+				e.setDisabled(name, st.Detail)
 				out = append(out, st)
 				continue
 			}
 		}
 		st.State = "ok"
-		delete(e.disabled, name)
+		e.setDisabled(name, "")
 		out = append(out, st)
 	}
 	return out
 }
 
 // runVersion 跑一次 `-version` 类参数，8s 超时，输出截断。
-func runVersion(ctx context.Context, bin string, args []string) string {
+func runVersion(ctx context.Context, bin string, args []string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(cctx, bin, args...).CombinedOutput()
+	out, err := exec.CommandContext(cctx, bin, args...).CombinedOutput()
 	s := string(out)
 	if len(s) > 600 {
 		s = s[:600]
+	}
+	return s, err
+}
+
+// firstLine 取首行摘要，用于诊断日志。
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 120 {
+		s = s[:120] + "…"
 	}
 	return s
 }

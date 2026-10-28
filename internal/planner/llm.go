@@ -158,11 +158,14 @@ func buildPrompt(t store.Task, st store.Store) (string, string) {
 // ---- HTTP ----
 
 type chatReq struct {
-	Model          string        `json:"model"`
-	Messages       []chatMessage `json:"messages"`
-	Temperature    float64       `json:"temperature,omitempty"`
-	MaxTokens      int           `json:"max_tokens,omitempty"`
-	ResponseFormat *respFormat   `json:"response_format,omitempty"`
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	// 指针：推理模型不接受自定义 temperature，必须能整字段省略
+	Temperature *float64 `json:"temperature,omitempty"`
+	// 经典模型用 max_tokens，推理模型（gpt-5 / o 系列）只认 max_completion_tokens
+	MaxTokens           int         `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int         `json:"max_completion_tokens,omitempty"`
+	ResponseFormat      *respFormat `json:"response_format,omitempty"`
 }
 
 type chatMessage struct {
@@ -186,18 +189,45 @@ type chatResp struct {
 	} `json:"error"`
 }
 
+// chat 调用一次 chat/completions，并对"推理模型参数差异"做自适应：
+//
+//	经典模型：max_tokens + temperature
+//	推理模型：只认 max_completion_tokens，且通常不接受自定义 temperature
+//
+// 与其让用户去猜该填哪个字段，不如先按通用参数请求，命中这两类错误时自动重试一次。
 func (p *LLMPlanner) chat(ctx context.Context, cfg settings.LLM, sys, user string) (string, int64, error) {
 	url := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
+	msgs := []chatMessage{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	}
+	temp := cfg.Temperature
 	req := chatReq{
-		Model:       cfg.Model,
-		Temperature: cfg.Temperature,
-		MaxTokens:   cfg.MaxTokens,
-		Messages: []chatMessage{
-			{Role: "system", Content: sys},
-			{Role: "user", Content: user},
-		},
+		Model: cfg.Model, Messages: msgs, MaxTokens: cfg.MaxTokens,
 		ResponseFormat: &respFormat{Type: "json_object"},
 	}
+	if temp > 0 {
+		req.Temperature = &temp
+	}
+	out, tok, err := p.post(ctx, cfg, url, req)
+	if err == nil {
+		return out, tok, nil
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, "max_completion_tokens") && !strings.Contains(msg, "temperature") {
+		return out, tok, err
+	}
+	// 退化为推理模型参数：不带 temperature，改用 max_completion_tokens
+	req2 := chatReq{
+		Model: cfg.Model, Messages: msgs, MaxCompletionTokens: cfg.MaxTokens,
+		ResponseFormat: &respFormat{Type: "json_object"},
+	}
+	return p.post(ctx, cfg, url, req2)
+}
+
+// post 是单次 HTTP 调用（含超时、错误解析）。
+func (p *LLMPlanner) post(ctx context.Context, cfg settings.LLM, url string, req chatReq) (string, int64, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", 0, err
@@ -289,7 +319,11 @@ func TestConnection(ctx context.Context, cfg settings.LLM) (string, int64, error
 	stg := settings.Open("")
 	_ = stg.Update(func(s *settings.Settings) { s.LLM = cfg })
 	p := New(stg)
-	return p.chat(ctx, cfg, "你是连通性测试助手。", "只回复两个字：正常")
+	// response_format=json_object 要求 messages 里出现 "json" 字样，否则 OpenAI 直接报错。
+	// 测试提示词也必须满足这一点，否则会把"配置正确"误判成"连接失败"。
+	return p.chat(ctx, cfg,
+		"你是连通性测试助手。只输出一个 JSON 对象，不要任何解释。",
+		`只回复这个 JSON：{"ok":true}`)
 }
 
 func truncate(s string, n int) string {

@@ -162,7 +162,12 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 
 	added, skipped := 0, 0
 	seen := map[string]bool{}
-	for _, it := range req.Seed {
+	// 未提供种子意图时，按范围自动生成（界面上"只填目标"就能跑）
+	seed := req.Seed
+	if len(seed) == 0 {
+		seed = autoSeed(req.Scope)
+	}
+	for _, it := range seed {
 		it.TaskID = saved.ID
 		if it.Action == "" {
 			it.Action = "Bash"

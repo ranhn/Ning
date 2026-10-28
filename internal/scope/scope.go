@@ -149,7 +149,7 @@ func (s *Scope) AllowsHost(host string) bool {
 	return false
 }
 
-// AllowsIP 判断 IP 是否在范围内（只看 cidr / exact_ip 规则）。
+// AllowsIP 判断 IP 是否在范围内（cidr / exact_ip 规则，以及以 IP 为主机的 exact_url 规则）。
 func (s *Scope) AllowsIP(ip netip.Addr) bool {
 	if s == nil || s.Empty() || !ip.IsValid() {
 		return false
@@ -160,6 +160,14 @@ func (s *Scope) AllowsIP(ip netip.Addr) bool {
 	}
 	for _, p := range s.prefixes {
 		if p.Contains(ip) {
+			return true
+		}
+	}
+	// exact_url 规则的主机若是 IP 字面量（如 http://10.0.0.5:8080/api），
+	// 说明任务授权了这个 IP，必须同样放行——否则该规则永远无法生效：
+	// 目标抽取会把 URL 归一化成 host，而 host 是 IP 时会走本函数。
+	for _, u := range s.urls {
+		if hit, err := netip.ParseAddr(u.Hostname()); err == nil && hit.Unmap() == ip {
 			return true
 		}
 	}

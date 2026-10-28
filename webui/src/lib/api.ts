@@ -4,7 +4,7 @@
 // are passed through and formatted at the call site.
 
 import type { ChatMention } from "@/lib/chat-mentions";
-import { liveFindings, liveGet, liveReport, liveTask, liveTasks } from "@/lib/argus-live";
+import { liveFindings, liveGet, liveReport, liveSend, liveTask, liveTasks } from "@/lib/argus-live";
 import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
 import type {
@@ -1075,8 +1075,13 @@ export const api = {
       streaming,
       session_header_key,
     }),
-  llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
-  saveLLMProfile: (p: {
+  llmProfiles: async () => {
+    // 模型配置以 Go 后端的 settings.json 为准（刷新/重启都不丢）
+    const live = await liveGet<{ profiles: LLMProfile[] }>("/llm/profiles");
+    if (live) return arr(live.profiles);
+    return get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles));
+  },
+  saveLLMProfile: async (p: {
     id?: number; // omit/0 = create; set = update that profile
     name: string;
     format: string;
@@ -1096,9 +1101,22 @@ export const api = {
     max_tokens_field?: string; // ""=max_tokens(默认) | "max_completion_tokens"（仅 openai 格式）
     session_header_key?: string; // 非空=每次请求带该 HTTP 头，头值=当前会话 session id；""=不发送
     retry?: LLMRetryOverride; // 本配置的重试覆盖；各项留 0 = 跟随全局重试策略
-  }) => post<{ id: number }>("/llm/profiles", p),
-  deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),
-  activateLLMProfile: (id: string) => post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) }),
+  }) => {
+    // 写入 Go 后端并落盘（settings.json），刷新/重启都不丢。
+    const live = await liveSend<{ id: number }>("POST", "/llm/profiles", p);
+    if (live.ok) return live.data;
+    return post<{ id: number }>("/llm/profiles", p);
+  },
+  deleteLLMProfile: async (id: string) => {
+    const live = await liveSend<{ deleted: number }>("DELETE", `/llm/profiles/${id}`);
+    if (live.ok) return live.data;
+    return del<{ deleted: number }>(`/llm/profiles/${id}`);
+  },
+  activateLLMProfile: async (id: string) => {
+    const live = await liveSend<{ ok: boolean }>("POST", "/llm/profiles/active", { id: Number(id) });
+    if (live.ok) return live.data;
+    return post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) });
+  },
   // 轮询链的实际顺序 + 各配置的熔断状态。
   llmPool: () => get<LLMPoolStatus>("/llm/pool"),
   // 清除熔断，让下一次调用立刻重试该配置；不传 id = 全部清除。

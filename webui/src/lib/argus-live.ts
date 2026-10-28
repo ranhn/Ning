@@ -11,6 +11,33 @@ import type { Finding, Severity, Task, TaskStatus } from "@/lib/types";
 const BASE = "/argus";
 const TIMEOUT_MS = 2500;
 
+/**
+ * 写操作直达 Go 后端（POST / PUT / DELETE）。
+ * 失败返回 {ok:false}，调用方据此回落到 mock，保证界面不白屏。
+ */
+export async function liveSend<T>(
+  method: "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<{ ok: true; data: T } | { ok: false }> {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(`${BASE}${path}`, {
+      method,
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!r.ok) return { ok: false };
+    const text = await r.text();
+    return { ok: true, data: (text ? JSON.parse(text) : {}) as T };
+  } catch {
+    return { ok: false };
+  }
+}
+
 type ArgTask = {
   id: number;
   name: string;

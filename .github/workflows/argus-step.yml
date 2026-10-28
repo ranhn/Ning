@@ -40,6 +40,18 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o dist/argus ./cmd/artex
           ls -lh dist
 
+      # Windows 二进制：开发机无法本地编译（DLP 加密依赖），由 CI 交叉编译产出。
+      # 放在单测之前：单测失败不应该阻塞可执行产物的生成。
+      - name: Build Windows binary
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o dist/argus-fusion-windows-amd64.exe ./cmd/artex
+          ls -lh dist
+
       # ARGUS 侧新增包的单测（命令沙箱的黑白名单、范围映射等）
       # 失败时把结果也写进 ci-logs，方便无 token 自查。
       - name: Test ARGUS packages
@@ -52,23 +64,23 @@ jobs:
           cp /tmp/test.log ci-logs/test.log 2>/dev/null || true
           exit $code
 
-      # Windows 二进制：开发机无法本地编译（DLP 加密依赖），由 CI 交叉编译产出。
-      - name: Build Windows binary
-        env:
-          GOOS: windows
-          GOARCH: amd64
-          CGO_ENABLED: '0'
-        run: |
-          mkdir -p dist
-          go build -trimpath -ldflags "-s -w" -o dist/argus-fusion-windows-amd64.exe ./cmd/artex
-          ls -lh dist
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: argus-fusion-windows-amd64
           path: dist/argus-fusion-windows-amd64.exe
           if-no-files-found: warn
+
+      # 把 Windows 二进制也发到 release（公开可下载，不需要 token）
+      - name: Publish Windows binary to release
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f dist/argus-fusion-windows-amd64.exe ]; then
+            gh release create fusion-latest --title "ARGUS fusion (ARTEX 0.4.0 + security kernel)" --notes "Windows binary built by CI." 2>/dev/null || true
+            gh release upload fusion-latest dist/argus-fusion-windows-amd64.exe --clobber || true
+          fi
 
       # 与 baseline 完全相同的就绪判定：端口能连就算启动（不要求 API 200）
       - name: Startup (same readiness probe as baseline)

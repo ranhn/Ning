@@ -1,0 +1,23 @@
+
+    _    ____ _____ _______  __
+   / \  |  _ \_   _| ____\ \/ /
+  / _ \ | |_) || | |  _|  \  /
+ / ___ \|  _ < | | | |___ /  \
+/_/   \_\_| \_\|_| |_____/_/\_\
+  AI autonomous penetration testing system
+  version dev  ·  linux/amd64  ·  go1.26.3  ·  listening on 127.0.0.1:8787
+
+2026/10/28 06:34:13 [config] config file: /home/runner/work/ARGUS/ARGUS/config.json (not found — will only try the environment variable ARTEX_PG_DSN)
+2026/10/28 06:34:13 [pg] database config source: environment variable ARTEX_PG_DSN
+2026/10/28 06:34:18 [traffic] recording proxy on 127.0.0.1:8788 (set HTTP_PROXY=http://127.0.0.1:8788 + trust _ca CA)
+time="2026-10-28T06:34:18Z" level=info msg="Proxy start listen at 127.0.0.1:8788\n"
+2026/10/28 06:34:18 [mcp] browser MCP capture proxy configuration removed
+2026/10/28 06:34:18 [config] skill directory: /home/runner/work/ARGUS/ARGUS/dist/skills
+2026/10/28 06:34:18 [auth] new JWT key written to /home/runner/work/ARGUS/ARGUS/dist/jwt.key
+2026/10/28 06:34:18 [tools] refreshed orchestration/platform tool schemas to code defaults (one-time)
+2026/10/28 06:34:18 [reporter] seeded the 'report writer' agent + finding trigger
+2026/10/28 06:34:18 [custom-tool] auto-detected python interpreter: /usr/bin/python3
+2026/10/28 06:34:18 [engine] no LLM provider configured — engine idle until set via /api/llm or env
+2026/10/28 06:34:18 ARTEX dev backend listening on 127.0.0.1:8787 (data=/home/runner/work/ARGUS/ARGUS/data, workers=3)
+--- meta ---
+run_id=40644582973 sha=e193db90a76b105efc11e22837abfc96bcfc131c

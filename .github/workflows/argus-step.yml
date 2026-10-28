@@ -40,31 +40,49 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o dist/argus ./cmd/artex
           ls -lh dist
 
-      - name: Startup smoke with process diagnostics
+      # 与 baseline 完全相同的就绪判定：端口能连就算启动（不要求 API 200）
+      - name: Startup (same readiness probe as baseline)
         run: |
           mkdir -p data
           ./dist/argus -addr 127.0.0.1:8787 -data "$PWD/data" > artex.log 2>&1 &
           PID=$!
           echo "pid=$PID"
-          alive=true
+          ready=false
           for i in $(seq 1 60); do
             if ! kill -0 $PID 2>/dev/null; then
-              echo "PROCESS EXITED before becoming ready (after ${i}s)"
-              alive=false
+              echo "PROCESS EXITED after ${i}s"
               break
             fi
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8787/api/tasks 2>/dev/null || echo 000)
-            if [ "$code" != "000" ]; then echo "ready after ${i}s (api/tasks=$code)"; break; fi
+            if curl -s -o /dev/null --max-time 2 http://127.0.0.1:8787/ 2>/dev/null; then
+              echo "port ready after ${i}s"
+              ready=true
+              break
+            fi
             sleep 1
           done
-          echo "alive=$alive"
-          wait $PID 2>/dev/null
-          echo "exit_code=$?"
-          echo "--- full log ---"
+          echo "--- log after startup ---"
           cat artex.log
-          [ "$alive" = "true" ] || exit 1
+          if [ "$ready" != "true" ]; then
+            echo "FAILED to become ready"
+            kill $PID 2>/dev/null || true
+            exit 1
+          fi
 
-      - name: Publish diagnostic log to repo
+      - name: Smoke checks (report every endpoint)
+        run: |
+          check() {
+            name="$1"; url="$2"
+            code=$(curl -s -o /tmp/body -w '%{http_code}' --max-time 10 "$url" || echo "000")
+            echo "=== $name -> HTTP $code ==="
+            head -c 300 /tmp/body 2>/dev/null || true
+            echo
+          }
+          check health http://127.0.0.1:8787/api/health
+          check stats  http://127.0.0.1:8787/api/stats
+          check tasks  http://127.0.0.1:8787/api/tasks
+          check root   http://127.0.0.1:8787/
+
+      - name: Publish log to repo
         if: always()
         run: |
           mkdir -p ci-logs

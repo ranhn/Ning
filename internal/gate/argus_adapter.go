@@ -20,10 +20,23 @@ import (
 type ArgusAdapter struct {
 	G      *Gate
 	TaskID int64
+	// Cap 是该任务的能力档位；空 = full。
+	// 代码审计类任务设为 codeaudit，Bash/WebFetch/MCP 会被物理摘除。
+	Cap Capability
 }
 
 // CheckToolRaw 实现 guard.ArgusGate。
 func (a *ArgusAdapter) CheckToolRaw(ctx context.Context, tool string, input []byte) (bool, string) {
+	// ⓪ 能力档位：最早判定。窄档位下"只读任务"连出网工具都拿不到，
+	//    不依赖模型是否配合，也不依赖后续命令解析。
+	cap := CapFull
+	if a != nil && a.Cap != "" {
+		cap = a.Cap
+	}
+	if !AllowTool(cap, tool) {
+		return false, "能力档位 “" + string(cap) + "” 不允许使用工具：" + tool
+	}
+
 	// ① 命令层：ARTEX 的 Bash 是直通完整 shell，这一层挡住真正危险的动作。
 	//    放在范围判定之前，因为"rm -rf /"即使在授权范围内也不该执行。
 	if reason := sandboxCheck(tool, input); reason != "" {

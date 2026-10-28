@@ -1,0 +1,32 @@
+# 二进制与构建产物
+/bin/
+/build/
+*.exe
+*.test
+*.out
+*.log
+
+# 运行期数据（证据库、状态快照、任务工作目录）
+/data/
+!/deploy/**
+state.json
+evidence.jsonl
+
+# 前端构建与依赖（体积大，且 node_modules 与机器相关）
+webui/node_modules/
+webui/.next/
+webui/out/
+webui/.turbo/
+webui/*.tsbuildinfo
+
+# 前端本地缓存/环境
+webui/.env
+webui/.env.local
+webui/.env.*.local
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

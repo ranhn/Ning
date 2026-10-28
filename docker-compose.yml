@@ -1,0 +1,38 @@
+# ARGUS 默认部署：安全默认值全部打开。
+# 与 ARTEX 默认（root + 全套攻击工具 + 0.0.0.0 暴露 8787）相反：
+#   - 只绑 127.0.0.1
+#   - 非 root、只读根、cap_drop ALL、no-new-privileges
+#   - 控制面网络 internal（无外网）。执行面需要出网时，单独挂 egress 网关并只放行
+#     授权目标网段与 LLM 端点（见 deploy/egress/）。
+services:
+  argus:
+    build: .
+    image: argus:local
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    environment:
+      ARGUS_TOKEN: ${ARGUS_TOKEN:?请先设置 ARGUS_TOKEN 环境变量}
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8787:8787"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - control
+
+networks:
+  control:
+    internal: true

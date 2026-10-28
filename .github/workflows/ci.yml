@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      # 注意：格式检查只报告不阻断。开发机存在企业 DLP，gofmt -w 会把源文件写成密文
+      # （见 README「开发环境注意事项」），因此不在 CI 里强制 gofmt。
+      - name: 格式检查（仅报告）
+        continue-on-error: true
+        run: gofmt -l .
+
+      - name: 静态检查
+        run: go vet ./...
+
+      - name: 单元测试（含竞态检测）
+        run: go test -race -count=1 ./...
+
+      - name: 编译
+        run: go build -trimpath -ldflags "-s -w" -o bin/argus ./cmd/argus
+
+      # 安全不变量是合入门禁：任何一层闸门退化都必须让 CI 红
+      - name: 安全不变量自检（15 项）
+        run: ./bin/argus selftest
+
+      - name: 端到端演示
+        run: ./bin/argus demo
+
+      - name: 镜像构建
+        run: docker build -t argus:ci .
+
+      - name: 依赖审计（零依赖应输出空）
+        run: |
+          go list -m all | tail -n +2 > deps.txt
+          cat deps.txt
+
+  security-regression:
+    # 专门盯住历史上被 fork 回退过的三类问题：鉴权 fail-open、范围失效、预算不限
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: 鉴权/范围/预算回归
+        run: |
+          go test -run 'TestAuthRequired|TestOutOfScope|TestEmptyScope|TestCharge|TestCreateRequiresScope' -v ./...

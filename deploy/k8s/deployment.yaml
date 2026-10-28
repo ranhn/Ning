@@ -1,0 +1,89 @@
+# 控制面部署：单副本 + 租约（生产用 Lease 选主，MVP 单副本即可）。
+# 安全默认值：非 root、只读根、drop ALL、禁提权、独立 SA 且不挂 token。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argus
+  namespace: argus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: argus
+  template:
+    metadata:
+      labels:
+        app: argus
+        app.kubernetes.io/part-of: argus
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: argus
+          image: argus:local
+          args: ["serve", "-addr", ":8787", "-data", "/data"]
+          env:
+            - name: ARGUS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: argus-token
+                  key: token
+          ports:
+            - containerPort: 8787
+              name: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: argus-data
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argus
+  namespace: argus
+spec:
+  type: ClusterIP
+  selector:
+    app: argus
+  ports:
+    - port: 8787
+      targetPort: http
+      name: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: argus-data
+  namespace: argus
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi

@@ -1,0 +1,27 @@
+# ARGUS 出口网关编排：一条命令起一个"只放行白名单"的代理
+#
+#   argus egress -scope "domain_suffix:lab.internal,cidr:10.20.0.0/16" -o deploy/egress/argus-allow.conf
+#   docker compose -f deploy/egress/docker-compose.egress.yml up -d
+#   argus serve -exec container -egress-net argus-egress -egress-proxy http://egress:3128
+#
+# 网络是 internal（无 NAT）：容器除了这个代理，没有任何别的出网路径。
+services:
+  egress:
+    image: ubuntu/squid:6.6-24.04_edge
+    container_name: argus-egress
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/log/squid:rw,noexec,nosuid,size=32m
+      - /var/spool/squid:rw,noexec,nosuid,size=32m
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+      - ./argus-allow.conf:/etc/squid/conf.d/argus-allow.conf:ro
+    networks:
+      - argus-egress
+    # 没有 ports：代理只在内网可达，宿主机与公网都碰不到
+
+networks:
+  argus-egress:
+    name: argus-egress
+    internal: true

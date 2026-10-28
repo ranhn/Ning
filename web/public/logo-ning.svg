@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- Ning brand mark: geometric N inside a rounded square.
+       Fill is solid black so the UI can invert it (brightness-0 invert) on dark surfaces. -->
+  <rect x="8" y="8" width="184" height="184" rx="44" fill="none" stroke="#000" stroke-width="10"/>
+  <path d="M62 146V54h16l46 62V54h16v92h-16L78 84v62z" fill="#000"/>
+</svg>

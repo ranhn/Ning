@@ -5,6 +5,9 @@ on:
     branches: [argus]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
@@ -35,6 +38,7 @@ jobs:
         run: |
           go build ./...
           go build -trimpath -ldflags "-s -w" -o dist/argus ./cmd/artex
+          ls -lh dist
 
       - name: Vet internal packages
         run: go vet ./internal/... || true
@@ -43,17 +47,34 @@ jobs:
         run: |
           mkdir -p data
           ./dist/argus -addr 127.0.0.1:8787 -data "$PWD/data" > artex.log 2>&1 &
+          echo "pid=$!"
           for i in $(seq 1 40); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8787/api/tasks || echo 000)
             if [ "$code" != "000" ]; then echo "up after ${i}s (api/tasks=$code)"; break; fi
             sleep 1
           done
+          echo "--- artex.log (first 60) ---"
+          head -n 60 artex.log || true
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8787/api/tasks || echo 000)
           echo "final api/tasks = $code"
           case "$code" in
             2*|3*|4*) echo "OK" ;;
-            *) echo "FAIL"; tail -n 60 artex.log; exit 1 ;;
+            *) echo "FAIL"; tail -n 120 artex.log; exit 1 ;;
           esac
+
+      # 失败时把日志提交回仓库：无需 token 即可用 raw 链接自查
+      - name: Publish failure log to repo
+        if: failure()
+        run: |
+          mkdir -p ci-logs
+          cp artex.log ci-logs/last-failure.log 2>/dev/null || echo "no artex.log" > ci-logs/last-failure.log
+          echo "--- run meta ---" >> ci-logs/last-failure.log
+          echo "run_id=$GITHUB_RUN_ID sha=$GITHUB_SHA branch=$GITHUB_REF_NAME" >> ci-logs/last-failure.log
+          git config user.name "argus-ci"
+          git config user.email "ci@local"
+          git add ci-logs || true
+          git commit -m "ci: failure log [skip ci]" || true
+          git push || true
 
       - uses: actions/upload-artifact@v4
         if: always()

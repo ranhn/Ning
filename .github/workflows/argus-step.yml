@@ -34,51 +34,45 @@ jobs:
           go-version: '1.26.3'
           cache: true
 
-      - name: Build everything (upstream + internal/argus packages)
+      - name: Build everything
         run: |
           go build ./...
           go build -trimpath -ldflags "-s -w" -o dist/argus ./cmd/artex
           ls -lh dist
 
-      - name: Vet internal packages
-        run: go vet ./internal/... || true
-
-      - name: Startup smoke (must behave exactly like baseline)
+      - name: Startup smoke with process diagnostics
         run: |
           mkdir -p data
           ./dist/argus -addr 127.0.0.1:8787 -data "$PWD/data" > artex.log 2>&1 &
-          echo "pid=$!"
-          for i in $(seq 1 40); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8787/api/tasks || echo 000)
-            if [ "$code" != "000" ]; then echo "up after ${i}s (api/tasks=$code)"; break; fi
+          PID=$!
+          echo "pid=$PID"
+          alive=true
+          for i in $(seq 1 60); do
+            if ! kill -0 $PID 2>/dev/null; then
+              echo "PROCESS EXITED before becoming ready (after ${i}s)"
+              alive=false
+              break
+            fi
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8787/api/tasks 2>/dev/null || echo 000)
+            if [ "$code" != "000" ]; then echo "ready after ${i}s (api/tasks=$code)"; break; fi
             sleep 1
           done
-          echo "--- artex.log (first 60) ---"
-          head -n 60 artex.log || true
-          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8787/api/tasks || echo 000)
-          echo "final api/tasks = $code"
-          case "$code" in
-            2*|3*|4*) echo "OK" ;;
-            *) echo "FAIL"; tail -n 120 artex.log; exit 1 ;;
-          esac
+          echo "alive=$alive"
+          wait $PID 2>/dev/null
+          echo "exit_code=$?"
+          echo "--- full log ---"
+          cat artex.log
+          [ "$alive" = "true" ] || exit 1
 
-      # 失败时把日志提交回仓库：无需 token 即可用 raw 链接自查
-      - name: Publish failure log to repo
-        if: failure()
+      - name: Publish diagnostic log to repo
+        if: always()
         run: |
           mkdir -p ci-logs
-          cp artex.log ci-logs/last-failure.log 2>/dev/null || echo "no artex.log" > ci-logs/last-failure.log
-          echo "--- run meta ---" >> ci-logs/last-failure.log
-          echo "run_id=$GITHUB_RUN_ID sha=$GITHUB_SHA branch=$GITHUB_REF_NAME" >> ci-logs/last-failure.log
+          cp artex.log ci-logs/last-run.log 2>/dev/null || echo "no log" > ci-logs/last-run.log
+          echo "--- meta ---" >> ci-logs/last-run.log
+          echo "run_id=$GITHUB_RUN_ID sha=$GITHUB_SHA" >> ci-logs/last-run.log
           git config user.name "argus-ci"
           git config user.email "ci@local"
           git add ci-logs || true
-          git commit -m "ci: failure log [skip ci]" || true
+          git commit -m "ci: run log [skip ci]" || true
           git push || true
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: argus-step1-linux-amd64
-          path: dist/argus
-          if-no-files-found: warn

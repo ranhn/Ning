@@ -52,6 +52,9 @@ func run() int {
 		addr    = flag.String("addr", ":8787", "HTTP listen address")
 		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
+		// egress-proxy：网络层强制。设置后所有工具子进程的 HTTP(S)_PROXY 都指向网关，
+		// 由网关按任务范围放行 —— 工具自己无法绕过。
+		egressProxy = flag.String("egress-proxy", "", "egress gateway proxy URL (e.g. http://egress:3128); when set, every tool subprocess must egress through it")
 	)
 	flag.Parse()
 
@@ -87,6 +90,11 @@ func run() int {
 		log.Fatalf("open stores: %v", err)
 	}
 	defer mgr.Close()
+
+	if *egressProxy != "" {
+		mgr.SetEgressProxy(*egressProxy)
+		log.Printf("[egress] 出口网关: %s（工具流量必须经它出网，放行清单按任务范围生成）", *egressProxy)
+	}
 
 	skillDir := config.SkillDir()
 	if abs, err := filepath.Abs(skillDir); err == nil {

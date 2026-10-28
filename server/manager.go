@@ -253,6 +253,9 @@ type Manager struct {
 	mu          sync.RWMutex
 	tasks       map[string]*Task
 	active      string
+	// egressProxy 是出口网关地址（如 http://egress:3128）。
+	// 非空时，所有工具子进程的 HTTP(S)_PROXY 都指向它，由网关按任务范围放行。
+	egressProxy string
 	trafficOn   bool // traffic capture switch (off by default; settings.traffic_capture)
 	llmRecOn    bool // LLM recording switch (off by default; settings.llm_record)
 	// Web search switch and source (off by default; settings.web_search_*). brave-free needs braveKey; tavily needs tavilyKey.
@@ -767,13 +770,27 @@ func (m *Manager) Traffic() *traffic.Traffic { return m.traffic }
 //
 // So the global proxy takes effect in both modes: at the MITM's upstream when
 // capturing, in the agent's own bash env / WebFetch when not.
+// SetEgressProxy 配置出口网关（如 http://egress:3128）。空字符串表示不启用。
+func (m *Manager) SetEgressProxy(addr string) {
+	m.mu.Lock()
+	m.egressProxy = strings.TrimSpace(addr)
+	m.mu.Unlock()
+}
+
 func (m *Manager) ProxyAddr() string {
+	// 出口网关优先：一旦配置，所有工具子进程的流量必须经它出网。
+	// 这比"应用层判断能不能连"更硬 —— 网关只放行任务范围，工具自己绕不过去。
+	m.mu.RLock()
+	egress := m.egressProxy
+	global := m.globalProxy
+	m.mu.RUnlock()
+	if egress != "" {
+		return egress
+	}
 	if m.traffic != nil && m.TrafficEnabled() {
 		return m.traffic.ProxyAddr()
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.globalProxy
+	return global
 }
 
 // ProxyCACert returns the CA cert path agents must trust to verify HTTPS through
@@ -782,6 +799,13 @@ func (m *Manager) ProxyAddr() string {
 // preserves real target certs, so no custom CA is needed there. Its emptiness is
 // also the worker's "recording off" signal (see workerSystem).
 func (m *Manager) ProxyCACert() string {
+	// 出口网关只做转发（不解密），不需要 CA；只有 MITM 录制代理才需要。
+	m.mu.RLock()
+	hasEgress := m.egressProxy != ""
+	m.mu.RUnlock()
+	if hasEgress {
+		return ""
+	}
 	if m.traffic == nil || !m.TrafficEnabled() {
 		return ""
 	}

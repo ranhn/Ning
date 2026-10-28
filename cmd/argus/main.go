@@ -259,6 +259,14 @@ func runServe(args []string) error {
 	tools := toolbox.New(nil)
 	tools.WorkDir = filepath.Join(*data, "work")
 	tools.MaxOutput = 64 << 10
+
+	// 内置目录字典：ffuf 没有字典就完全用不了，启动时就位。
+	// 放在工作目录内，模型用相对路径 `-w wordlists/common.txt` 即可（沙箱禁绝对路径）。
+	if wlPath, n, err := toolbox.EnsureWordlist(tools.WorkDir); err == nil {
+		log.Printf("内置字典: %s（%d 条路径，ffuf 用 -w wordlists/common.txt）", wlPath, n)
+	} else {
+		log.Printf("内置字典写入失败: %v", err)
+	}
 	switch *execMode {
 	case "container":
 		cfg := toolbox.ContainerConfig{

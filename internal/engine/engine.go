@@ -58,6 +58,12 @@ type GoalMet interface {
 	GoalMet() bool
 }
 
+// GoalRejectAware 是可选能力：调度器拒绝收尾时，把理由告诉规划器，
+// 让它在下一轮补证据，而不是反复声明"已完成"。
+type GoalRejectAware interface {
+	SetGoalRejected(reason string)
+}
+
 // Config 是调度参数。
 type Config struct {
 	Workers   int
@@ -71,6 +77,13 @@ type Config struct {
 	IdleRounds int
 	// StagnantRounds：连续多少轮没有新增产出就提示规划器「换方向」（只提示，不结束）。
 	StagnantRounds int
+	// MinDoneBeforeGoalMet 是"模型声明目标达成"的产出门槛。
+	//
+	// 为什么需要：模型可以在一事无成时也返回 goal_met=true，任务就悄悄结束了——
+	// 用户看到的是"跑了一会儿，什么也没挖到"。
+	// >0 时要求「至少这么多条动作完成」或「已有漏洞」，否则拒绝收尾并告诉它补证据。
+	// 0 = 不检查（沿用旧行为）。
+	MinDoneBeforeGoalMet int
 }
 
 // DefaultConfig 返回默认参数（worker 3、防抖 800ms、心跳 600s）。
@@ -86,6 +99,9 @@ func DefaultConfig() Config {
 		MaxRounds:      200,
 		IdleRounds:     0,
 		StagnantRounds: 3,
+		// 至少跑过 10 条动作、或已经拿到漏洞，才允许模型宣布结束。
+		// 这个数字刻意不高：既不让"什么都没做就收工"发生，也不会把长任务卡死。
+		MinDoneBeforeGoalMet: 10,
 	}
 }
 
@@ -421,7 +437,26 @@ func (e *Engine) plannerLoop(ctx context.Context, t store.Task, stop <-chan stru
 			return false
 		}
 		// 模型显式声明"目标已被证据证明达成" → 唯一的正常结束路径。
+		// 但"声明"不等于"达成"：零产出的收尾必须被挡住，否则任务会在什么都没做的情况下结束。
 		if gm, ok := e.pl.(GoalMet); ok && gm.GoalMet() {
+			if e.cfg.MinDoneBeforeGoalMet > 0 {
+				done := 0
+				for _, it := range e.st.Intents(t.ID) {
+					if it.State == store.IntentDone {
+						done++
+					}
+				}
+				findings := len(e.st.Findings(t.ID))
+				if findings == 0 && done < e.cfg.MinDoneBeforeGoalMet {
+					reason := fmt.Sprintf(
+						"当前只有 %d 条动作完成、0 个已确认漏洞，未达到收尾门槛（%d 条）。请继续执行能产生证据的动作：先扩面（子域/端点），再做模板验证。",
+						done, e.cfg.MinDoneBeforeGoalMet)
+					if ga, ok := e.pl.(GoalRejectAware); ok {
+						ga.SetGoalRejected(reason)
+					}
+					return false
+				}
+			}
 			return true
 		}
 		added := 0

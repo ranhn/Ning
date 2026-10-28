@@ -47,9 +47,17 @@ type LLMPlanner struct {
 	lastCost   int64
 	lastErr    string
 	calls      int64
-	goalMet    bool // 上一轮模型是否显式声明目标达成
-	stagnant   int  // 连续无产出轮次（由调度器注入）
-	stagnantAt int  // 触发"换方向"提示的阈值
+	goalMet    bool   // 上一轮模型是否显式声明目标达成
+	stagnant   int    // 连续无产出轮次（由调度器注入）
+	stagnantAt int    // 触发"换方向"提示的阈值
+	goalReject string // 上一次收尾被拒的理由（由调度器注入）
+}
+
+// SetGoalRejected 实现 engine.GoalRejectAware：把"为什么不能收尾"带进下一轮提示词。
+func (p *LLMPlanner) SetGoalRejected(reason string) {
+	p.mu.Lock()
+	p.goalReject = reason
+	p.mu.Unlock()
 }
 
 // SetStagnation 实现 engine.StagnationAware：调度器把停滞轮次告诉规划器。
@@ -151,7 +159,7 @@ const systemPrompt = `你是授权渗透测试任务的规划器（Planner）。
 输出格式：
 {"goal_met":false,"intents":[{"action":"Bash|WebFetch|Read|Write","summary":"工具输入的 JSON 字符串","param_key":"用于去重的简短参数签名","asset_id":数字,"target":"目标主机或URL","vuln_class":"可选","severity":"info|low|medium|high|critical"}]}`
 
-func buildPrompt(t store.Task, st store.Store, env *Env, stagnant, threshold int) (string, string) {
+func buildPrompt(t store.Task, st store.Store, env *Env, stagnant, threshold int, goalReject string) (string, string) {
 	var b strings.Builder
 
 	// 执行环境放在最前面：模型最容易犯的错是"按 Linux 习惯生成命令"，
@@ -195,6 +203,13 @@ func buildPrompt(t store.Task, st store.Store, env *Env, stagnant, threshold int
 		b.WriteString("\n")
 	}
 
+	// 收尾被拒：把理由原样带回来。模型要清楚"不允许结束"，否则它会反复声明完成。
+	if strings.TrimSpace(goalReject) != "" {
+		b.WriteString("## 上一次的收尾被拒绝（不允许结束）\n")
+		b.WriteString(goalReject + "\n")
+		b.WriteString("在补齐证据之前不能返回 goal_met。请先扩面（子域 / 端点），再对可疑端点做模板验证。\n\n")
+	}
+
 	// 停滞提示（不结束任务，只纠偏）：对齐 ARTEX 的 detectStagnation——
 	// 同一方向重复多次且没有新发现时，要求换一个实质不同的方向。
 	if threshold > 0 && stagnant >= threshold {
@@ -220,6 +235,8 @@ func buildPrompt(t store.Task, st store.Store, env *Env, stagnant, threshold int
 	b.WriteString("- **子域枚举**：subfinder -d <domain> -silent\n")
 	b.WriteString("- **HTTP 探活**：httpx -u https://<host> -status-code -title -tech-detect -silent\n")
 	b.WriteString("- **爬端点**：katana -u https://<host> -d 2 -silent   ← 从页面和 JS 里抽接口，是发现漏洞的关键\n")
+	b.WriteString("- **目录/路径爆破**：ffuf -u https://<host>/FUZZ -w wordlists/common.txt -mc 200,301,302,403 -silent\n")
+	b.WriteString("  （字典已内置在工作目录，路径必须写成相对路径 wordlists/common.txt）\n")
 	b.WriteString("- 端口/服务识别：nmap -sV -Pn -p 80,443,8080,8443 <host>\n")
 	b.WriteString("- 路径存活探测：curl -sS -I https://<host>/admin  （一次一条路径，不要用管道）\n")
 	b.WriteString("- **已知漏洞模板验证**：nuclei -u https://<host> -severity critical,high,medium -silent\n")
@@ -303,8 +320,9 @@ func (p *LLMPlanner) PromptFor(t store.Task, st store.Store) (string, string) {
 	}
 	p.mu.Lock()
 	stagnant, threshold := p.stagnant, p.stagnantAt
+	reject := p.goalReject
 	p.mu.Unlock()
-	return buildPrompt(t, st, env, stagnant, threshold)
+	return buildPrompt(t, st, env, stagnant, threshold, reject)
 }
 
 // ---- HTTP ----

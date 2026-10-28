@@ -89,7 +89,48 @@ func Run() []Result {
 		check("resume: 停止后残留的 running 意图会被重新执行", checkResume),
 		check("long-run: 生产默认不因空轮收敛（只有目标达成/超时/停止才结束）", checkLongRun),
 		check("placeholder: 模型编造的占位目标在生成时被过滤", checkPlaceholder),
+		check("goal-contract: 零产出不允许收尾，拒绝理由进入提示词", checkGoalContract),
 	}
+}
+
+// checkGoalContract 锁住"不许空手宣布完成"这条契约。
+//
+// 真实场景：模型可以在一条动作都没跑成的情况下返回 goal_met=true，
+// 任务就这样"正常结束"了 —— 用户看到的是"跑了一会儿，什么都没挖到"。
+func checkGoalContract() error {
+	cfg := engine.DefaultConfig()
+	if cfg.MinDoneBeforeGoalMet <= 0 {
+		return fmt.Errorf("默认配置应设置收尾门槛（MinDoneBeforeGoalMet），实际 %d", cfg.MinDoneBeforeGoalMet)
+	}
+
+	p := planner.New(settings.Open(""))
+	p.SetGoalRejected("当前只有 2 条动作完成、0 个已确认漏洞，未达到收尾门槛（10 条）")
+	st := store.NewMemory()
+	t, err := st.CreateTask(store.Task{Name: "goal", Goal: "挖到漏洞", Workers: 1})
+	if err != nil {
+		return err
+	}
+	_, user := p.PromptFor(t, st)
+	for _, want := range []string{"收尾被拒绝", "未达到收尾门槛", "不能返回 goal_met"} {
+		if !strings.Contains(user, want) {
+			return fmt.Errorf("提示词缺少 %q，模型会反复声明完成：\n%s", want, excerptOf(user))
+		}
+	}
+
+	// 字典必须能落盘并可被 ffuf 用相对路径引用
+	dir := filepath.Join(os.TempDir(), "argus-wl-test")
+	defer os.RemoveAll(dir)
+	wlPath, n, err := toolbox.EnsureWordlist(dir)
+	if err != nil {
+		return fmt.Errorf("内置字典写入失败: %w", err)
+	}
+	if n < 100 {
+		return fmt.Errorf("字典条目过少（%d），扫不出东西", n)
+	}
+	if _, statErr := os.Stat(wlPath); statErr != nil {
+		return fmt.Errorf("字典文件不存在: %v", statErr)
+	}
+	return nil
 }
 
 // checkPlaceholder 锁住"别让 example.invalid 这类占位目标进执行"这条约束。

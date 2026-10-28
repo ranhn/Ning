@@ -34,8 +34,23 @@ type Guard struct {
 	attrib      map[string]int // failure attribution counts (Observer / G5)
 	reg         *hook.Registry
 	interceptor *intercept.Interceptor // optional; nil disables user-configured rules
+
+	// argusGate 鏄?ARGUS 涓夊眰闂搁棬鐨勭 2 灞傦紙鎵ц鏈熻寖鍥村垽瀹氾級銆俙r
+	// nil 鏃惰涓轰笌涓婃父涓€鑷达紙鍙窇鐢ㄦ埛閰嶇疆鐨?intercept 瑙勫垯锛夈€俙r
+	// 瀹冨厛浜?intercept 瑙勫垯鎵ц锛氳寖鍥存槸纭竟鐣岋紝涓嶅厑璁歌 allow 瑙勫垯瑕嗙洊銆俙r
+	argusGate ArgusGate
 }
 
+// ArgusGate is the execution-time scope check injected by ARGUS.
+// Implemented by an adapter over internal/gate.Gate; kept as an interface so the
+// guard package stays testable without a live scope.
+type ArgusGate interface {
+	CheckToolRaw(ctx context.Context, tool string, input []byte) (allowed bool, reason string)
+}
+
+// SetArgusGate wires the ARGUS scope gate into this guard instance.
+// Called once per task, so each task carries its own authorization scope.
+func (g *Guard) SetArgusGate(gt ArgusGate) { g.argusGate = gt }
 // New creates a Guard without user-configured intercept rules (used for pentest
 // tasks where the Interceptor is not yet available).
 func New() *Guard { return newGuard(nil) }
@@ -74,6 +89,15 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		_ = json.Unmarshal(ev.Input, &in)
 		cmd = in.Text
 	}
+	// ARGUS 涓夊眰闂搁棬绗?2 灞傦細鎵ц鏈熻寖鍥村垽瀹氥€俙r
+	// 鏀惧湪鐢ㄦ埛瑙勫垯涔嬪墠 鈥斺€?瓒婄晫鏄‖杈圭晫锛屼换浣?allow 瑙勫垯閮戒笉鑳芥妸瀹冩斁寮€銆俙r
+	if g.argusGate != nil {
+		if allowed, reason := g.argusGate.CheckToolRaw(ctx, ev.ToolName, ev.Input); !allowed {
+			g.record(ev.ToolName, "deny", reason, cmd)
+			return g.block(ev.ToolName, reason, cmd)
+		}
+	}
+
 	g.record(ev.ToolName, "allow", "", cmd)
 	return g.applyIntercept(ctx, ev)
 }

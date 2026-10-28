@@ -77,10 +77,15 @@ func CommonPaths() []string {
 	return out
 }
 
-// EnsureWordlist 把内置字典写到 <dir>/wordlists/common.txt（已存在则不覆盖）。
+// EnsureWordlist 准备 ffuf 用的字典文件：<dir>/wordlists/common.txt。
 //
-// 返回路径与条目数。写在**工作目录内**是关键：沙箱禁止绝对路径参数，
-// 而 ffuf 的 -w 需要文件；用相对路径 `-w wordlists/common.txt` 即可（cwd 就是工作目录）。
+// 优先级（逐级回退，保证任何部署形态都有可用字典）：
+//  1. 工作目录里已有全量字典（>= fullWordlistThreshold 条）→ 直接用，不覆盖用户替换的版本
+//  2. 仓库/部署自带的 wordlists/common.txt（SecLists 精选，4752 条）→ 复制过去
+//  3. 内置的 commonPaths（221 条）→ 兜底，保证新环境开箱能扫
+//
+// 写在**工作目录内**是关键：沙箱禁止绝对路径参数，而 ffuf 的 -w 需要文件；
+// 用相对路径 `-w wordlists/common.txt` 即可（cwd 就是工作目录）。
 func EnsureWordlist(dir string) (string, int, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", 0, fmt.Errorf("空工作目录")
@@ -89,13 +94,98 @@ func EnsureWordlist(dir string) (string, int, error) {
 	if err := os.MkdirAll(wlDir, 0o750); err != nil {
 		return "", 0, err
 	}
-	f := filepath.Join(wlDir, "common.txt")
-	if _, err := os.Stat(f); err == nil {
-		return f, len(commonPaths), nil
+	target := filepath.Join(wlDir, "common.txt")
+
+	// ① 已有足够全的字典就保留（尊重用户手工替换的版本），
+	//    但仍要把 bundled 目录里的其它规模字典补齐（缺哪个补哪个，不覆盖）。
+	if n, ok := lineCount(target); ok && n >= fullWordlistThreshold {
+		copyBundledExtras(wlDir)
+		return target, n, nil
 	}
+
+	// ② 仓库/部署自带的字典：整目录复制，让 ffuf 能按需选规模
+	//    common.txt（4752 条，默认）/ raft-small-directories.txt（20114 条，更深）/ api-endpoints.txt（接口专用）
+	for _, src := range bundledWordlists() {
+		if data, err := os.ReadFile(src); err != nil || len(data) == 0 {
+			continue
+		}
+		srcDir := filepath.Dir(src)
+		if entries, derr := os.ReadDir(srcDir); derr == nil {
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
+					continue
+				}
+				if b, rerr := os.ReadFile(filepath.Join(srcDir, e.Name())); rerr == nil {
+					_ = os.WriteFile(filepath.Join(wlDir, e.Name()), b, 0o640)
+				}
+			}
+		}
+		n, _ := lineCount(target)
+		return target, n, nil
+	}
+
+	// ③ 内置兜底
 	body := strings.Join(commonPaths, "\n") + "\n"
-	if err := os.WriteFile(f, []byte(body), 0o640); err != nil {
+	if err := os.WriteFile(target, []byte(body), 0o640); err != nil {
 		return "", 0, err
 	}
-	return f, len(commonPaths), nil
+	return target, len(commonPaths), nil
+}
+
+// copyBundledExtras 把 bundled 目录里除 common.txt 外的字典补齐到工作目录（已存在则跳过）。
+//
+// 为什么要补齐：common.txt 只够"第一次扫"，真实项目常需要更深的 raft-small（2 万条）
+// 或 API 专项字典。启动时就位，模型才能按需切换，而不是每次都要人手工拷文件。
+func copyBundledExtras(wlDir string) {
+	for _, src := range bundledWordlists() {
+		srcDir := filepath.Dir(src)
+		entries, err := os.ReadDir(srcDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
+				continue
+			}
+			dst := filepath.Join(wlDir, e.Name())
+			if _, serr := os.Stat(dst); serr == nil {
+				continue
+			}
+			if b, rerr := os.ReadFile(filepath.Join(srcDir, e.Name())); rerr == nil {
+				_ = os.WriteFile(dst, b, 0o640)
+			}
+		}
+		return
+	}
+}
+
+// fullWordlistThreshold 判定"已经是全量字典"的条目下限。
+// 内置兜底只有 221 条，SecLists 精选 4752 条，取中间的 1000 作为分界。
+const fullWordlistThreshold = 1000
+
+// bundledWordlists 按优先级返回可能存在的自带字典路径（可执行文件旁 / 当前目录）。
+func bundledWordlists() []string {
+	cands := []string{
+		filepath.Join("wordlists", "common.txt"),
+	}
+	if exe, err := os.Executable(); err == nil {
+		cands = append(cands, filepath.Join(filepath.Dir(exe), "wordlists", "common.txt"))
+		cands = append(cands, filepath.Join(filepath.Dir(exe), "..", "wordlists", "common.txt"))
+	}
+	return cands
+}
+
+// lineCount 统计文件非空行数。
+func lineCount(path string) (int, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n, true
 }

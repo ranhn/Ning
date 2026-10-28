@@ -125,9 +125,39 @@ func DefaultPolicies() map[string]Policy {
 			Bin:         "ffuf",
 			Timeout:     3 * time.Minute,
 			MaxArgs:     30,
-			BadFlags:    []string{"-o", "-config"},
+			BadFlags:    []string{"-o", "-config", "-request", "-input-cmd"},
 			VersionArgs: []string{"-V"},
 			Fingerprint: []string{"ffuf"},
+		},
+		// 子域枚举：只读 DNS 查询，输出给后续意图消费。
+		// -all 会把最慢的源全打开（单次可能跑几十分钟），禁掉。
+		"subfinder": {
+			Bin:         "subfinder",
+			Timeout:     3 * time.Minute,
+			MaxArgs:     25,
+			BadFlags:    []string{"-o", "-oI", "-dL", "-config", "-all", "-resume"},
+			VersionArgs: []string{"-version"},
+			Fingerprint: []string{"subfinder"},
+		},
+		// 爬虫：从页面与 JS 里抽端点，是"发现攻击面"的关键一环。
+		"katana": {
+			Bin:      "katana",
+			Timeout:  5 * time.Minute,
+			MaxArgs:  30,
+			BadFlags: []string{"-o", "-jsonl", "-config", "-resume"},
+			// katana 的 -version 只往 stderr 打 banner（没有版本号），
+			// 所以用项目域名做指纹：同系列工具都带这一行。
+			VersionArgs: []string{"-version"},
+			Fingerprint: []string{"projectdiscovery"},
+		},
+		// XSS 验证：反射/存储型探测，命中即产出证据。
+		"dalfox": {
+			Bin:         "dalfox",
+			Timeout:     3 * time.Minute,
+			MaxArgs:     30,
+			BadFlags:    []string{"-o", "--output", "--config", "--custom-payload", "--remote-payloads"},
+			VersionArgs: []string{"--version"},
+			Fingerprint: []string{"dalfox"},
 		},
 		"whatweb": {
 			Bin:         "whatweb",

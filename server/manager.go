@@ -924,6 +924,8 @@ func (m *Manager) CreateTaskWithOptions(description, goal string, opts pgdb.Task
 		return nil, err
 	}
 	t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
+	// 绑定 ARGUS 范围闸门：此后该任务每次工具调用都先过范围判定
+	m.attachArgusGate(t)
 	m.mu.Lock()
 	m.tasks[t.ID] = t
 	m.active = t.ID
@@ -1123,6 +1125,8 @@ func (m *Manager) LoadExisting() []*Task {
 			continue
 		}
 		t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
+		// 从数据库加载的任务同样绑定闸门（重启后依然生效）
+		m.attachArgusGate(t)
 		m.tasks[id] = t
 		loaded = append(loaded, t)
 	}
